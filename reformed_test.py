@@ -4,9 +4,13 @@ import logging
 import praw
 import argparse
 import os
+import configparser
 from slack import WebClient
 from slack.errors import SlackApiError
 from slackeventsapi import SlackEventAdapter
+
+config = configparser.ConfigParser()
+config.read('slack.ini')
 
 parser = argparse.ArgumentParser(description='Do the mod stuff!!')
 parser.add_argument('-s', '--subreddit', type=str, default='reformed', help='What subreddit to run this on. Default: reformed')
@@ -44,26 +48,11 @@ if len(messages) == 0:
     str_messages = "Nothing in the modqueue"
 print(str_messages)
 
-slack_token = os.environ["SLACK_API_TOKEN"]
-client = WebClient(token=slack_token)
+slack_token = config['Default']['API_TOKEN']
+slack_client = WebClient(token=slack_token)
 
-response = client.chat_postMessage(
+response = slack_client.chat_postMessage(
   channel=args.channel,
   text=str_messages,
   user="terevos"
 )
-
-# slack_token = os.environ["SLACK_API_TOKEN"]
-# slack_events_adapter = SlackEventAdapter(slack_token, endpoint="/slack/events")
-
-# # Create an event listener for "reaction_added" events and print the emoji name
-# @slack_events_adapter.on("reaction_added")
-# def reaction_added(event_data):
-#     emoji = event_data["event"]["reaction"]
-#     print(emoji)
-
-
-# # Start the server on port 3000
-# slack_events_adapter.start(port=3000)
-
-# import pdb; pdb.set_trace()
