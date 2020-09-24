@@ -6,10 +6,9 @@ import argparse
 import os
 import time
 import configparser
-from slack import WebClient
+#from slack import WebClient
 from slack import RTMClient
-from slack.errors import SlackApiError
-from slackeventsapi import SlackEventAdapter
+#from slack.errors import SlackApiError
 
 config = configparser.ConfigParser()
 config.read('slack.ini')
