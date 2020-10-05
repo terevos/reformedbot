@@ -47,7 +47,7 @@ I can respond to:
         """
 
     elif 'report' in message_text or 'queue' in message_text:
-        message = reddit.get_modqueue()
+        message = reddit.get_modqueue(channel_id)
     else:
         messages = ["I don't know that command yet. Please don't abuse me...  I already have PTSD",
             "Huh?",

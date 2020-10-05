@@ -10,6 +10,51 @@ from slack.errors import SlackApiError
 from slackeventsapi import SlackEventAdapter
 from reddit_actions import RedditActions
 
+
+def vote_button(channel):
+    #import pdb; pdb.set_trace()
+    response = slack_client.chat_postMessage(channel=channel, command="", text='/poll-standuply "test" "a" "b" "c"') #blocks=[])
+		# {
+		# 	"type": "section",
+		# 	"text": {
+		# 		"type": "mrkdwn",
+		# 		"text": "This is a section block with a button."
+		# 	}
+		# },
+		# {
+		# 	"type": "actions",
+		# 	"block_id": "voteblock",
+		# 	"elements": [
+		# 		{
+		# 			"type": "button",
+		# 			"text": {
+		# 				"type": "plain_text",
+		# 				"text": "Approve"
+		# 			},
+		# 			"value": "approve"
+		# 		},
+		# 		{
+		# 			"type": "button",
+		# 			"text": {
+		# 				"type": "plain_text",
+		# 				"text": "Remove"
+		# 			},
+		# 			"value": "remove"
+		# 		},
+		# 		{
+		# 			"type": "button",
+		# 			"text": {
+		# 				"type": "plain_text",
+		# 				"text": "Abstain"
+		# 			},
+		# 			"value": "abstain"
+		# 		}
+		# 	]
+		# }
+        # ])
+    return response
+
+
 config = configparser.ConfigParser()
 config.read('slack.ini')
 
@@ -32,15 +77,22 @@ reddit = RedditActions(args.subreddit)
 slack_token = config['Default']['API_TOKEN']
 slack_client = WebClient(token=slack_token)
 
-if 'report' in args.command.lower() or 'queue' in args.command.lower():
-    message = reddit.get_modqueue()
-elif 'mail' in args.command.lower():
-    message = reddit.get_modmail()
+message_text = args.command.lower()
+
+if 'report' in message_text or 'queue' in message_text:
+    message = reddit.get_modqueue(args.channel)
+    response = slack_client.chat_postMessage(channel=args.channel, text=message)
+elif 'mail' in message_text:
+    message = reddit.get_modmail(args.channel)
+    response = slack_client.chat_postMessage(channel=args.channel, text=message)
+elif 'button' in message_text:
+    message = vote_button(args.channel)
 else:
     message = "Don't know that command"
+    response = slack_client.chat_postMessage(channel=args.channel, text=message)
 
 
-response = slack_client.chat_postMessage(
-        channel=args.channel,
-        text=message
-    )
+#response = slack_client.chat_postMessage(channel=args.channel, text=message)
+
+
+
