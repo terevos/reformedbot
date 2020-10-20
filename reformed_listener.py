@@ -19,6 +19,12 @@ config.read('slack.ini')
 reddit = RedditActions('reformed')
 
 
+def slack_post_message(web_client, channel_id, message):
+    web_client.chat_postMessage(
+        channel=channel_id,
+        text = message
+    )
+
 @RTMClient.run_on(event="message")
 def say_hello(**payload):
     data = payload['data']
@@ -47,7 +53,12 @@ I can respond to:
         """
 
     elif 'report' in message_text or 'queue' in message_text:
-        message = reddit.get_modqueue(channel_id)
+        try:
+            message = reddit.get_modqueue(channel_id)
+        except Exception as e:
+            message = f"Could not grab the modqueue. Exception: {e}"
+    elif 'earl' in message_text:
+        message = "Earl?  I don't know any Earls. I'm not British, you know."
     else:
         messages = ["I don't know that command yet. Please don't abuse me...  I already have PTSD",
             "Huh?",
@@ -58,10 +69,15 @@ I can respond to:
         ]
         message = random.choice(messages)
     
-    web_client.chat_postMessage(
-        channel=channel_id,
-        text = message
-    )
+    try:
+        slack_post_message(web_client, channel_id, message)
+    except:
+        print("Encountered exception. Trying to post to slack again")
+        time.sleep(1)
+        try:
+            slack_post_message(web_client, channel_id, message)
+        except Exception as e:
+            print(f"Encountered exception on 2nd try: Exception: {e}")
 
 
 slack_token = config['Default']['API_TOKEN']
