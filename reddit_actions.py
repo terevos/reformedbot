@@ -10,23 +10,32 @@ class RedditActions(object):
         self.posted_to_slack = {}
 
 
-    def get_modqueue(self, slack_channel):
+    def get_modqueue(self, channel):
         #logging.INFO("get_modqueue")
 
         ### Read from today's file into a DICT
         self.posted_to_slack = self.get_todays_modqueue_file()
         ### Initialize the channel in the DICT
-        if slack_channel not in self.posted_to_slack:
-            self.posted_to_slack[slack_channel] = []
-        messages = ["=== MODQUEUE ==="]
+        if channel not in self.posted_to_slack:
+            self.posted_to_slack[channel] = {}
+        messages_dict = {}
         for idx, reported_item in enumerate(self.sub.mod.modqueue()):
-            queue_num = len(self.posted_to_slack[slack_channel])
-            ### Don't post stuff that's already been posted to this channel in slack
-            if reported_item.id in self.posted_to_slack[slack_channel]:
-                messages.append(f"Item: {reported_item.id} already posted in Slack\n")
-                continue
-            messages.append(f"{queue_num+1}. https://reddit.com{reported_item.permalink}?context=3")
-            messages.append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
+            id = reported_item.id
+            queue_num = len(self.posted_to_slack[channel])+1
+            messages_dict[id] = {
+                "queue_num": queue_num,
+                "messages": []
+            }
+            report_link = f"https://reddit.com{reported_item.permalink}?context=3"
+            
+            messages_dict[id]["messages"].append(report_link)
+            ### Mention it's been posted already
+            if reported_item.id in self.posted_to_slack[channel].keys():
+                messages_dict[id]["messages"].append(f"Item: <{self.posted_to_slack[channel][id]['report_link']}|{id}> already posted in Slack\n")
+                ## If already posted to slack, update the queue_num to match
+                messages_dict[id]['queue_num'] = self.posted_to_slack[channel][id]['queue_num']
+
+            messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
             if isinstance(reported_item, praw.models.reddit.comment.Comment):
                 comment_body = []
                 for line in reported_item.body.splitlines():
@@ -34,25 +43,37 @@ class RedditActions(object):
                         comment_body.append(line)
                     else:
                         comment_body.append("_" + line + "_")
-                messages.append("Type: Comment - " + "\n".join(comment_body))
+                messages_dict[id]["messages"].append("Type: Comment - " + "\n".join(comment_body))
             elif isinstance(reported_item, praw.models.reddit.submission.Submission):
-                messages.append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
+                messages_dict[id]["messages"].append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
             else:
-                messages.append(f"Type: Unkown")
+                messages_dict[id]["messages"].append(f"Type: Unkown")
             for uidx, r in enumerate(reported_item.user_reports):
                 if uidx == 0:
-                    messages.append("User Reports:")
-                messages.append(f"  {uidx+1}. {r[0]}")
+                    messages_dict[id]["messages"].append("User Reports:")
+                messages_dict[id]["messages"].append(f"  {uidx+1}. {r[0]}")
             for midx, r in enumerate(reported_item.mod_reports):
                 if midx == 0:
-                    messages.append("Mod Reports:")
-                messages.append(f"   {r[0]}")
+                    messages_dict[id]["messages"].append("Mod Reports:")
+                messages_dict[id]["messages"].append(f"   {r[0]}")
             
-            messages.append("\n")
-            self.posted_to_slack[slack_channel].append(reported_item.id)
+            messages_dict[id]["messages"].append("\n")
+            self.posted_to_slack[channel][reported_item.id] = {
+                "queue_num": messages_dict[id]['queue_num'],
+                "report_link": report_link
+            }
 
-        str_messages = "\n".join(messages)
-        if len(messages) == 1:
+        ## Take the messages and sort them in prep for posting to Slack
+        sorted_messages = ["=== MODQUEUE ==="]
+        for index in range(100):
+            for key,val in messages_dict.items():
+                print(f"Key: {key}, Val: {val}")
+                if index == val['queue_num']:
+                    sorted_messages.append(f"{val['queue_num']}.")
+                    sorted_messages.extend(val['messages'])
+
+        str_messages = "\n".join(sorted_messages)
+        if len(sorted_messages) == 1:
             str_messages = "Nothing in the mod queue"
 
         print(self.posted_to_slack)
