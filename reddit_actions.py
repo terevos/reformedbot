@@ -35,7 +35,10 @@ class RedditActions(object):
                 ## If already posted to slack, update the queue_num to match
                 messages_dict[id]['queue_num'] = self.posted_to_slack[channel][id]['queue_num']
 
-            messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
+            if reported_item.author == None: ## weird exception where there's no author
+                messages_dict[id]["messages"].append(f"User: NONE FOUND, Item ID: {reported_item.id}")
+            else:
+                messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
             if isinstance(reported_item, praw.models.reddit.comment.Comment):
                 comment_body = []
                 for line in reported_item.body.splitlines():
@@ -67,7 +70,6 @@ class RedditActions(object):
         sorted_messages = ["=== MODQUEUE ==="]
         for index in range(100):
             for key,val in messages_dict.items():
-                print(f"Key: {key}, Val: {val}")
                 if index == val['queue_num']:
                     sorted_messages.append(f"{val['queue_num']}.")
                     sorted_messages.extend(val['messages'])
@@ -76,7 +78,6 @@ class RedditActions(object):
         if len(sorted_messages) == 1:
             str_messages = "Nothing in the mod queue"
 
-        print(self.posted_to_slack)
         self.write_todays_modqueue_file(self.posted_to_slack)
         return str_messages
 
