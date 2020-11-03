@@ -85,5 +85,13 @@ slack_token = config['Default']['API_TOKEN']
 web_client = WebClient(slack_token, timeout=30)
 bot_id = (web_client.api_call("auth.test")["user_id"].lower())
 
-rtm_client = RTMClient(token=slack_token)
-rtm_client.start()
+
+while True:
+    try:
+        rtm_client = RTMClient(token=slack_token)
+        rtm_client.start()
+    except Exception as e:
+        print("############################################################")
+        print(e)
+        print("############################################################")
+        time.sleep(10)
