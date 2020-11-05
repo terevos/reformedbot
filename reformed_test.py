@@ -91,7 +91,6 @@ else:
     message = "Don't know that command"
     response = slack_client.chat_postMessage(channel=args.channel, text=message)
     
-import pdb;pdb.set_trace()
 print(response)
 
 #response = slack_client.chat_postMessage(channel=args.channel, text=message)

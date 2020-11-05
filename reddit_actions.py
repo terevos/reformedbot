@@ -58,7 +58,10 @@ class RedditActions(object):
             for midx, r in enumerate(reported_item.mod_reports):
                 if midx == 0:
                     messages_dict[id]["messages"].append("Mod Reports:")
-                messages_dict[id]["messages"].append(f"   {r[0]}")
+                if len(r) > 1:
+                    messages_dict[id]["messages"].append(f"   {r[1]}: {r[0]}")
+                else:
+                    messages_dict[id]["messages"].append(f"   UNKNOWN: {r[0]}")
             
             messages_dict[id]["messages"].append("\n")
             self.posted_to_slack[channel][reported_item.id] = {
