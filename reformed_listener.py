@@ -25,6 +25,25 @@ def slack_post_message(web_client, channel_id, message):
         text = message
     )
 
+def slack_post_modqueue(web_client, channel_id, message):
+    if isinstance(message, list):
+        for one in message:
+            if len(message) == 1:
+                messages = ["Nothing in the report queue. Go take a nap.",
+                    "Nothing here. Go away.",
+                    "Queue? We don't need no stinking queue.",
+                    "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
+                    "My dog ate the reports.",
+                    "I'm tired. Leave me alone. Also... there's no reports so just chill."
+                ]
+                message = random.choice(messages)
+                slack_post_message(web_client, channel_id, message)
+            else:
+                for one in message:
+                    slack_post_message(web_client, channel_id, one)
+    else:
+        slack_post_message(web_client, channel_id, message)
+
 @RTMClient.run_on(event="message")
 def say_hello(**payload):
     data = payload['data']
@@ -71,20 +90,12 @@ I can respond to:
         message = random.choice(messages)
     
     try:
-        if isinstance(message, list):
-            for one in message:
-                slack_post_message(web_client, channel_id, one)
-        else:
-            slack_post_message(web_client, channel_id, message)
+        slack_post_modqueue(web_client, channel_id, message)
     except:
         print("Encountered exception. Trying to post to slack again")
         time.sleep(1)
         try:
-            if isinstance(message, list):
-                for one in message:
-                    slack_post_message(web_client, channel_id, one)
-            else:
-                slack_post_message(web_client, channel_id, message)
+            slack_post_modqueue(web_client, channel_id, message)
         except Exception as e:
             print(f"Encountered exception on 2nd try: Exception: {e}")
 
