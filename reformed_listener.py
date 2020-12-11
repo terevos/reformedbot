@@ -71,12 +71,20 @@ I can respond to:
         message = random.choice(messages)
     
     try:
-        slack_post_message(web_client, channel_id, message)
+        if isinstance(message, list):
+            for one in message:
+                slack_post_message(web_client, channel_id, one)
+        else:
+            slack_post_message(web_client, channel_id, message)
     except:
         print("Encountered exception. Trying to post to slack again")
         time.sleep(1)
         try:
-            slack_post_message(web_client, channel_id, message)
+            if isinstance(message, list):
+                for one in message:
+                    slack_post_message(web_client, channel_id, one)
+            else:
+                slack_post_message(web_client, channel_id, message)
         except Exception as e:
             print(f"Encountered exception on 2nd try: Exception: {e}")
 

@@ -74,15 +74,14 @@ class RedditActions(object):
         for index in range(100):
             for key,val in messages_dict.items():
                 if index == val['queue_num']:
-                    sorted_messages.append(f"{val['queue_num']}.")
-                    sorted_messages.extend(val['messages'])
-
-        str_messages = "\n".join(sorted_messages)
-        if len(sorted_messages) == 1:
-            str_messages = "Nothing in the mod queue"
+                    sorted_messages.append("{v}. {m}".format(v=val['queue_num'], m="\n".join(val['messages'])))
+                    #sorted_messages.extend(val['messages'])
 
         self.write_todays_modqueue_file(self.posted_to_slack)
-        return str_messages
+
+        return sorted_messages
+
+        
 
     def get_modmail(self):
         #logging.INFO("get_modmail")

@@ -81,7 +81,11 @@ message_text = args.command.lower()
 
 if 'report' in message_text or 'queue' in message_text:
     message = reddit.get_modqueue(args.channel)
-    response = slack_client.chat_postMessage(channel=args.channel, text=message)
+    if isinstance(message, list):
+        for one in message:
+            response = slack_client.chat_postMessage(channel=args.channel, text=one)
+    else:
+        response = slack_client.chat_postMessage(channel=args.channel, text=message)
 elif 'mail' in message_text:
     message = reddit.get_modmail(args.channel)
     response = slack_client.chat_postMessage(channel=args.channel, text=message)
