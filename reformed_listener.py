@@ -27,20 +27,19 @@ def slack_post_message(web_client, channel_id, message):
 
 def slack_post_modqueue(web_client, channel_id, message):
     if isinstance(message, list):
-        for one in message:
-            if len(message) == 1:
-                messages = ["Nothing in the report queue. Go take a nap.",
-                    "Nothing here. Go away.",
-                    "Queue? We don't need no stinking queue.",
-                    "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
-                    "My dog ate the reports.",
-                    "I'm tired. Leave me alone. Also... there's no reports so just chill."
-                ]
-                message = random.choice(messages)
-                slack_post_message(web_client, channel_id, message)
-            else:
-                for one in message:
-                    slack_post_message(web_client, channel_id, one)
+        if len(message) == 1:
+            messages = ["Nothing in the report queue. Go take a nap.",
+                "Nothing here. Go away.",
+                "Queue? We don't need no stinking queue.",
+                "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
+                "My dog ate the reports.",
+                "I'm tired. Leave me alone. Also... there's no reports so just chill."
+            ]
+            message = random.choice(messages)
+            slack_post_message(web_client, channel_id, message)
+        else:
+            for one in message:
+                slack_post_message(web_client, channel_id, one)
     else:
         slack_post_message(web_client, channel_id, message)
 
