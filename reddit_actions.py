@@ -28,46 +28,48 @@ class RedditActions(object):
             }
             report_link = f"https://reddit.com{reported_item.permalink}?context=3"
             
-            messages_dict[id]["messages"].append(report_link)
+            
             ### Mention it's been posted already
             if reported_item.id in self.posted_to_slack[channel].keys():
                 messages_dict[id]["messages"].append(f"Item: <{self.posted_to_slack[channel][id]['report_link']}|{id}> already posted in Slack\n")
                 ## If already posted to slack, update the queue_num to match
                 messages_dict[id]['queue_num'] = self.posted_to_slack[channel][id]['queue_num']
 
-            if reported_item.author == None: ## weird exception where there's no author
-                messages_dict[id]["messages"].append(f"User: NONE FOUND, Item ID: {reported_item.id}")
             else:
-                messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
-            if isinstance(reported_item, praw.models.reddit.comment.Comment):
-                comment_body = []
-                for line in reported_item.body.splitlines():
-                    if line == "":
-                        comment_body.append(line)
-                    else:
-                        comment_body.append("_" + line + "_")
-                messages_dict[id]["messages"].append("Type: Comment - " + "\n".join(comment_body))
-            elif isinstance(reported_item, praw.models.reddit.submission.Submission):
-                messages_dict[id]["messages"].append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
-            else:
-                messages_dict[id]["messages"].append(f"Type: Unkown")
-            for uidx, r in enumerate(reported_item.user_reports):
-                if uidx == 0:
-                    messages_dict[id]["messages"].append("User Reports:")
-                messages_dict[id]["messages"].append(f"  {uidx+1}. {r[0]}")
-            for midx, r in enumerate(reported_item.mod_reports):
-                if midx == 0:
-                    messages_dict[id]["messages"].append("Mod Reports:")
-                if len(r) > 1:
-                    messages_dict[id]["messages"].append(f"   {r[1]}: {r[0]}")
+                messages_dict[id]["messages"].append(report_link)
+                if reported_item.author == None: ## weird exception where there's no author
+                    messages_dict[id]["messages"].append(f"User: NONE FOUND, Item ID: {reported_item.id}")
                 else:
-                    messages_dict[id]["messages"].append(f"   UNKNOWN: {r[0]}")
-            
-            messages_dict[id]["messages"].append("\n")
-            self.posted_to_slack[channel][reported_item.id] = {
-                "queue_num": messages_dict[id]['queue_num'],
-                "report_link": report_link
-            }
+                    messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
+                if isinstance(reported_item, praw.models.reddit.comment.Comment):
+                    comment_body = []
+                    for line in reported_item.body.splitlines():
+                        if line == "":
+                            comment_body.append(line)
+                        else:
+                            comment_body.append("_" + line + "_")
+                    messages_dict[id]["messages"].append("Type: Comment - " + "\n".join(comment_body))
+                elif isinstance(reported_item, praw.models.reddit.submission.Submission):
+                    messages_dict[id]["messages"].append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
+                else:
+                    messages_dict[id]["messages"].append(f"Type: Unkown")
+                for uidx, r in enumerate(reported_item.user_reports):
+                    if uidx == 0:
+                        messages_dict[id]["messages"].append("User Reports:")
+                    messages_dict[id]["messages"].append(f"  {uidx+1}. {r[0]}")
+                for midx, r in enumerate(reported_item.mod_reports):
+                    if midx == 0:
+                        messages_dict[id]["messages"].append("Mod Reports:")
+                    if len(r) > 1:
+                        messages_dict[id]["messages"].append(f"   {r[1]}: {r[0]}")
+                    else:
+                        messages_dict[id]["messages"].append(f"   UNKNOWN: {r[0]}")
+                
+                messages_dict[id]["messages"].append("\n")
+                self.posted_to_slack[channel][reported_item.id] = {
+                    "queue_num": messages_dict[id]['queue_num'],
+                    "report_link": report_link
+                }
 
         ## Take the messages and sort them in prep for posting to Slack
         sorted_messages = ["=== MODQUEUE ==="]
