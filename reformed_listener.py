@@ -25,10 +25,10 @@ def slack_post_message(web_client, channel_id, message):
         text = message
     )
 
-def slack_post_modqueue(web_client, channel_id, message, type='reports'):
+def slack_post_modqueue(web_client, channel_id, message, type='report'):
     if isinstance(message, list):
         if len(message) == 1:
-            if type == 'reports':
+            if type == 'report':
                 messages = ["Nothing in the report queue. Go take a nap.",
                     "Nothing here. Go away.",
                     "Queue? We don't need no stinking queue.",
@@ -63,6 +63,8 @@ def say_hello(**payload):
     message_text = data['text'].lower()
     dm_bot = bot_id
 
+    request_type = "unknown"
+
     ## don't respond if bot is not mentioned
     if dm_bot not in message_text:
         return
@@ -82,12 +84,14 @@ I can respond to:
         """
 
     elif 'report' in message_text or 'queue' in message_text:
+        request_type = "report"
         try:
             message = reddit.get_modqueue(channel_id)
         except Exception as e:
             import traceback
             message = f"Could not grab the modqueue. Exception: {e}. Full traceback:\n " + traceback.format_exc()
     elif 'mail' in message_text:
+        request_type = "mail"
         try:
             message = reddit.get_modmail(channel_id)
         except Exception as e:
@@ -106,14 +110,14 @@ I can respond to:
         message = random.choice(messages)
     
     try:
-        slack_post_modqueue(web_client, channel_id, message)
+        slack_post_modqueue(web_client, channel_id, message, type=request_type)
     except:
         print("Encountered exception. Trying to post to slack again")
         time.sleep(1)
         try:
             ## Only do this for the modqueue
             if 'report' in message_text:
-                slack_post_modqueue(web_client, channel_id, message)
+                slack_post_modqueue(web_client, channel_id, message, type=request_type)
         except Exception as e:
             print(f"Encountered exception on 2nd try: Exception: {e}")
 
