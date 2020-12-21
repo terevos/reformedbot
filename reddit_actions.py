@@ -14,7 +14,7 @@ class RedditActions(object):
         #logging.INFO("get_modqueue")
 
         ### Read from today's file into a DICT
-        self.posted_to_slack = self.get_todays_modqueue_file()
+        self.posted_to_slack = self.get_modqueue_file()
         ### Initialize the channel in the DICT
         if channel not in self.posted_to_slack:
             self.posted_to_slack[channel] = {}
@@ -79,7 +79,7 @@ class RedditActions(object):
                     sorted_messages.append("{v}. {m}".format(v=val['queue_num'], m="\n".join(val['messages'])))
                     #sorted_messages.extend(val['messages'])
 
-        self.write_todays_modqueue_file(self.posted_to_slack)
+        self.write_modqueue_file(self.posted_to_slack)
 
         return sorted_messages
 
@@ -101,23 +101,23 @@ class RedditActions(object):
         return str_messages
 
 
-    def get_todays_modqueue_file(self):
+    def get_modqueue_file(self):
         if not os.path.exists('logs'):
             os.makedirs('logs')
         today = date.today()
-        today_file = today.strftime('%Y%m%d-modlog.json')
-        today_file_path = "logs/" + today_file
-        if not os.path.exists(today_file_path):
-            with open(today_file_path, 'w+') as f:
+        month_file = today.strftime('%Y%m-modlog.json')
+        month_file_path = "logs/" + month_file
+        if not os.path.exists(month_file_path):
+            with open(month_file_path, 'w+') as f:
                 f.write("{}")
-        with open(today_file_path, 'r') as f:
+        with open(month_file_path, 'r') as f:
             return json.load(f)
 
-    def write_todays_modqueue_file(self, jdata):
+    def write_modqueue_file(self, jdata):
         today = date.today()
-        today_file = today.strftime('%Y%m%d-modlog.json')
-        today_file_path = "logs/" + today_file
+        month_file = today.strftime('%Y%m-modlog.json')
+        month_file_path = "logs/" + month_file
 
         formatted_json = json.dumps(jdata, indent=4, sort_keys=True)
-        with open(today_file_path, 'w') as outfile:
+        with open(month_file_path, 'w') as outfile:
             outfile.write(formatted_json)
