@@ -25,16 +25,27 @@ def slack_post_message(web_client, channel_id, message):
         text = message
     )
 
-def slack_post_modqueue(web_client, channel_id, message):
+def slack_post_modqueue(web_client, channel_id, message, type='reports'):
     if isinstance(message, list):
         if len(message) == 1:
-            messages = ["Nothing in the report queue. Go take a nap.",
-                "Nothing here. Go away.",
-                "Queue? We don't need no stinking queue.",
-                "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
-                "My dog ate the reports.",
-                "I'm tired. Leave me alone. Also... there's no reports so just chill."
-            ]
+            if type == 'reports':
+                messages = ["Nothing in the report queue. Go take a nap.",
+                    "Nothing here. Go away.",
+                    "Queue? We don't need no stinking queue.",
+                    "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
+                    "My dog ate the reports.",
+                    "I'm tired. Leave me alone. Also... there's no reports so just chill."
+                ]
+            elif type == 'mail':
+                messages = ["I give you reports all day, now you want me to give you mail? Your mailbox is empty.",
+                    "Nothing here. Go away.",
+                    "Mail? We don't need no stinking mail.",
+                    "Mail??  uhh... I put it somewhere... uhh... Nope. No mail. :-D",
+                    "My dog ate the mail.",
+                    "I'm tired. Leave me alone. Also... there's no mail so just chill."
+                ]
+            else:
+                messages = ["I just don't know what to say"]
             message = random.choice(messages)
             slack_post_message(web_client, channel_id, message)
         else:
