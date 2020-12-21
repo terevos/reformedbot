@@ -76,6 +76,12 @@ I can respond to:
         except Exception as e:
             import traceback
             message = f"Could not grab the modqueue. Exception: {e}. Full traceback:\n " + traceback.format_exc()
+    elif 'mail' in message_text:
+        try:
+            message = reddit.get_modmail(channel_id)
+        except Exception as e:
+            import traceback
+            message = f"Could not grab mod mail. Exception: {e}. Full traceback:\n " + traceback.format_exc()
     elif 'earl' in message_text:
         message = "Earl?  I don't know any Earls. I'm not British, you know."
     else:

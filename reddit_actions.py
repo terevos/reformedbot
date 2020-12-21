@@ -4,6 +4,8 @@ import os
 from datetime import date
 
 class RedditActions(object):
+    mod_list = ['aviator07', 'terevos2', 'bishopofreddit', 'friardon', 'superlewis', 'jcmathetes', 'drkc9n', 'mcfrenchington', 'partypastor', 'ciroflexo']
+
     def __init__(self, subreddit):
         reddit = praw.Reddit('reformedbot', user_agent='reformedbot user agent')
         self.sub = reddit.subreddit(subreddit)
@@ -85,20 +87,52 @@ class RedditActions(object):
 
         
 
-    def get_modmail(self):
-        #logging.INFO("get_modmail")
-        messages = []
-
-        for idx, mod_message in enumerate(self.sub.mod.unread(limit=1)):
-            messages.append(f"From: {mod_message.author}, To: {mod_message.dest}")
-            messages.append(mod_message.body)
+    def get_modmail(self, channel):
+        ### Read from today's file into a DICT
+        self.posted_to_slack = self.get_modqueue_file()
+        ### Initialize the channel in the DICT
+        if channel not in self.posted_to_slack:
+            self.posted_to_slack[channel] = {'modmail': {} }
+        messages_dict = { "modmail": {} }
+        for idx, mod_message in enumerate(self.sub.mod.unread(limit=100)):
+            id = mod_message.id
+            queue_num = len(self.posted_to_slack[channel]['modmail'])+1
+            messages_dict['modmail'][id] = {
+                "queue_num": queue_num,
+                "messages": []
+            }
             
-            messages.append("\n")
+            ### Skip if it's posted already
+            if mod_message.id in self.posted_to_slack[channel]['modmail'].keys():
+                ## skip
+                continue
+            ## also skip if author is one of us mods
+            elif mod_message.author.name.lower() in self.mod_list:
+                ## skip
+                continue
+            else:
+                messages_dict['modmail'][id]["messages"].append(f"{idx+1}. ==== Message ID: {id} =====")
+                messages_dict['modmail'][id]["messages"].append(f"From: {mod_message.author}, To: {mod_message.dest}")
+                messages_dict['modmail'][id]["messages"].append(mod_message.body)
+                
+                messages_dict['modmail'][id]["messages"].append("\n")
 
-        str_messages = "\n".join(messages)
-        if len(messages) == 0:
-            str_messages = "Nothing in modmail"
-        return str_messages
+                self.posted_to_slack[channel]['modmail'][mod_message.id] = {
+                    "queue_num": messages_dict['modmail'][id]['queue_num']
+                }
+
+        ## Take the messages and sort them in prep for posting to Slack
+        sorted_messages = ["=== MOD MAILS ==="]
+        for index in range(100):
+            for key,val in messages_dict['modmail'].items():
+                if index == val['queue_num']:
+                    if len(messages_dict['modmail'][id]["messages"]) > 0:
+                        sorted_messages.append("\n".join(val['messages']))
+    
+
+        self.write_modqueue_file(self.posted_to_slack)
+
+        return sorted_messages
 
 
     def get_modqueue_file(self):

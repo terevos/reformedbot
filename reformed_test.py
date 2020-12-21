@@ -61,7 +61,7 @@ config.read('slack.ini')
 parser = argparse.ArgumentParser(description='Do the mod stuff!!')
 parser.add_argument('-s', '--subreddit', type=str, default='reformed', help='What subreddit to run this on. Default: reformed')
 parser.add_argument('-d', '--debug', action='store_true')
-parser.add_argument('-c', '--channel', type=str, default='mod_botting', help='What Slack channel to post to')
+parser.add_argument('-c', '--channel', type=str, default='mod_zbotting', help='What Slack channel to post to')
 parser.add_argument('command', type=str, default='report', help='What to do')
 
 args = parser.parse_args()
@@ -88,7 +88,11 @@ if 'report' in message_text or 'queue' in message_text:
         response = slack_client.chat_postMessage(channel=args.channel, text=message)
 elif 'mail' in message_text:
     message = reddit.get_modmail(args.channel)
-    response = slack_client.chat_postMessage(channel=args.channel, text=message)
+    if isinstance(message, list):
+        for one in message:
+            response = slack_client.chat_postMessage(channel=args.channel, text=one)
+    else:
+        response = slack_client.chat_postMessage(channel=args.channel, text=message)
 elif 'button' in message_text:
     message = vote_button(args.channel)
 else:
