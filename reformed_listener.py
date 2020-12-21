@@ -100,7 +100,9 @@ I can respond to:
         print("Encountered exception. Trying to post to slack again")
         time.sleep(1)
         try:
-            slack_post_modqueue(web_client, channel_id, message)
+            ## Only do this for the modqueue
+            if 'report' in message_text:
+                slack_post_modqueue(web_client, channel_id, message)
         except Exception as e:
             print(f"Encountered exception on 2nd try: Exception: {e}")
 
