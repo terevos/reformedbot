@@ -126,7 +126,7 @@ class RedditActions(object):
         for index in range(100):
             for key,val in messages_dict['modmail'].items():
                 if index == val['queue_num']:
-                    if len(messages_dict['modmail'][id]["messages"]) > 0:
+                    if len(messages_dict['modmail'][key]["messages"]) > 0:
                         sorted_messages.append("\n".join(val['messages']))
     
 
