@@ -111,7 +111,7 @@ class RedditActions(object):
                 ## skip
                 continue
             else:
-                messages_dict['modmail'][id]["messages"].append(f"{idx+1}. ==== Message ID: {id} =====")
+                messages_dict['modmail'][id]["messages"].append(f"{idx+1}. ==== ModMail Message ID: {id} =====")
                 messages_dict['modmail'][id]["messages"].append(f"From: {mod_message.author}, To: {mod_message.dest}")
                 messages_dict['modmail'][id]["messages"].append(mod_message.body)
                 
@@ -123,6 +123,62 @@ class RedditActions(object):
 
         ## Take the messages and sort them in prep for posting to Slack
         sorted_messages = ["=== MOD MAILS ==="]
+        for index in range(100):
+            for key,val in messages_dict['modmail'].items():
+                if index == val['queue_num']:
+                    if len(messages_dict['modmail'][key]["messages"]) > 0:
+                        sorted_messages.append("\n".join(val['messages']))
+    
+
+        self.write_modqueue_file(self.posted_to_slack)
+
+        return sorted_messages
+
+
+    ### Problem here is that new replies in a conversation are not shown because we dismiss it based on the Conv ID already being send to slack. But we need to base that on message id, not conv id
+    def get_conversations(self, channel):
+        ### Read from today's file into a DICT
+        self.posted_to_slack = self.get_modqueue_file()
+        ### Initialize the channel in the DICT
+        if channel not in self.posted_to_slack:
+            self.posted_to_slack[channel] = {'modmail': {} }
+        messages_dict = { "modmail": {} }
+        for idx, mod_conv in enumerate(self.sub.modmail.conversations(limit=1)):
+            import pdb; pdb.set_trace()
+            id = mod_conv.id
+            queue_num = len(self.posted_to_slack[channel]['modmail'])+1
+            messages_dict['modmail'][id] = {
+                "queue_num": queue_num,
+                "messages": []
+            }
+            
+            authors_list = []
+            for auth in mod_conv.authors:
+                authors_list.append(auth.name.lower())
+            ### Skip if it's posted already
+            if mod_conv.id in self.posted_to_slack[channel]['modmail'].keys():
+                ## If already posted to slack, update the queue_num to match
+                messages_dict['modmail'][id]['queue_num'] = self.posted_to_slack[channel]['modmail'][id]['queue_num']
+                messages_dict['modmail'][id]["messages"].append(f"Modmail #{messages_dict['modmail'][id]['queue_num']} ID: <https://mod.reddit.com/mail/perma/{id}|{id}> already posted in Slack\n")
+                
+                continue
+            else:
+                messages_dict['modmail'][id]["messages"].append(f"{idx+1}. ==== ModMail Message ID: {id} =====")
+                messages_dict['modmail'][id]["messages"].append("From: {p}, With: {a}".format(p=mod_conv.participant ,a=", ".join(authors_list)))
+                messages_dict['modmail'][id]["messages"].append(mod_conv.subject)
+                for message in mod_conv.messages:
+                    messages_dict['modmail'][id]["messages"].append(f"From: {message.author.name}, Date: {message.date}")
+                    messages_dict['modmail'][id]["messages"].append(f"Body: {message.body_markdown}")
+                    messages_dict['modmail'][id]["messages"].append("\n")
+                
+                messages_dict['modmail'][id]["messages"].append("\n")
+
+                self.posted_to_slack[channel]['modmail'][mod_conv.id] = {
+                    "queue_num": messages_dict['modmail'][id]['queue_num']
+                }
+
+        ## Take the messages and sort them in prep for posting to Slack
+        sorted_messages = ["=== MOD CONVERSATIONS ==="]
         for index in range(100):
             for key,val in messages_dict['modmail'].items():
                 if index == val['queue_num']:
