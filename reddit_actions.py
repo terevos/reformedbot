@@ -75,7 +75,7 @@ class RedditActions(object):
 
         ## Take the messages and sort them in prep for posting to Slack
         sorted_messages = ["=== MODQUEUE ==="]
-        for index in range(100):
+        for index in range(len(self.posted_to_slack[channel])+10):
             for key,val in messages_dict.items():
                 if index == val['queue_num']:
                     sorted_messages.append("{v}. {m}".format(v=val['queue_num'], m="\n".join(val['messages'])))
