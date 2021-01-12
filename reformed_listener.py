@@ -11,8 +11,8 @@ from slack import WebClient
 from slack import RTMClient
 from reddit_actions import RedditActions
 
-#logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+#logging.basicConfig(level=logging.DEBUG)
 
 config = configparser.ConfigParser()
 config.read('slack.ini')

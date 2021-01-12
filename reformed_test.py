@@ -93,6 +93,13 @@ elif 'mail' in message_text:
             response = slack_client.chat_postMessage(channel=args.channel, text=one)
     else:
         response = slack_client.chat_postMessage(channel=args.channel, text=message)
+elif 'conv' in message_text:
+    message = reddit.get_conversations(args.channel)
+    if isinstance(message, list):
+        for one in message:
+            response = slack_client.chat_postMessage(channel=args.channel, text=one)
+    else:
+        response = slack_client.chat_postMessage(channel=args.channel, text=message)
 elif 'button' in message_text:
     message = vote_button(args.channel)
 else:
