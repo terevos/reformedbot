@@ -6,13 +6,16 @@ from datetime import date
 class RedditActions(object):
     mod_list = ['aviator07', 'terevos2', 'bishopofreddit', 'friardon', 'superlewis', 'jcmathetes', 'drkc9n', 'mcfrenchington', 'partypastor', 'ciroflexo']
 
-    def __init__(self, subreddit):
+    def __init__(self, subreddit, no_repost=False):
         reddit = praw.Reddit('reformedbot', user_agent='reformedbot user agent')
         self.sub = reddit.subreddit(subreddit)
         self.posted_to_slack = {}
+        self.no_repost = no_repost
 
 
-    def get_modqueue(self, channel):
+    def get_modqueue(self, channel, no_repost=None):
+        if no_repost is None:
+            no_repost = self.no_repost
         #logging.INFO("get_modqueue")
 
         ### Read from today's file into a DICT
@@ -33,10 +36,13 @@ class RedditActions(object):
             
             ### Mention it's been posted already
             if reported_item.id in self.posted_to_slack[channel].keys():
-                messages_dict[id]["messages"].append(f"Item: <{self.posted_to_slack[channel][id]['report_link']}|{id}> already posted in Slack\n")
                 ## If already posted to slack, update the queue_num to match
                 messages_dict[id]['queue_num'] = self.posted_to_slack[channel][id]['queue_num']
-
+                if no_repost:
+                    messages_dict.pop(id)
+                    continue
+                else:
+                    messages_dict[id]["messages"].append(f"Item: <{self.posted_to_slack[channel][id]['report_link']}|{id}> already posted in Slack\n")
             else:
                 messages_dict[id]["messages"].append(report_link)
                 if reported_item.author == None: ## weird exception where there's no author

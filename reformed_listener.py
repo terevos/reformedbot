@@ -83,11 +83,14 @@ I can respond to:
     report = I'll list out the current items in the mod queue
     queue = Same as 'report'
         """
-
+   
     elif 'report' in message_text or 'queue' in message_text:
+        no_repost = True
+        if 'full' in message_text:
+            no_repost = False
         request_type = "report"
         try:
-            message = reddit.get_modqueue(channel_id)
+            message = reddit.get_modqueue(channel_id, no_repost)
         except Exception as e:
             import traceback
             message = f"Could not grab the modqueue. Exception: {e}. Full traceback:\n " + traceback.format_exc()
