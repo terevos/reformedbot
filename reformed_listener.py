@@ -80,7 +80,8 @@ where all your dreams come true.
 I can respond to:
     hello = I'll say hi back
     help = You're looking at it
-    report = I'll list out the current items in the mod queue
+    report = I'll list out the current items in the mod queue (not ones posted already)
+    report full = I'll list out the current items in the mod queue, even if they've been listed already
     queue = Same as 'report'
         """
    
