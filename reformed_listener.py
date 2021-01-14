@@ -26,17 +26,20 @@ def slack_post_message(web_client, channel_id, message):
         text = message
     )
 
-def slack_post_modqueue(web_client, channel_id, message, type='report'):
+def slack_post_modqueue(web_client, channel_id, message, type='report', total=0):
     if isinstance(message, list):
         if len(message) == 1:
             if type == 'report':
-                messages = ["Nothing in the report queue. Go take a nap.",
-                    "Nothing here. Go away.",
-                    "Queue? We don't need no stinking queue.",
-                    "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
-                    "My dog ate the reports.",
-                    "I'm tired. Leave me alone. Also... there's no reports so just chill."
-                ]
+                if total == 0:
+                    messages = ["Nothing in the report queue. Go take a nap.",
+                        "Nothing here. Go away.",
+                        "Queue? We don't need no stinking queue.",
+                        "Reports??  uhh... I put them somewhere... uhh... Nope. No reports. :-D",
+                        "My dog ate the reports.",
+                        "I'm tired. Leave me alone. Also... there's no reports so just chill."
+                    ]
+                else:
+                    messages = [f"Total in the queue: {total}. Run 'report full' to see which ones."]
             elif type == 'mail':
                 messages = ["I give you reports all day, now you want me to give you mail? Your mailbox is empty.",
                     "Nothing here. Go away.",
@@ -84,14 +87,14 @@ I can respond to:
     report full = I'll list out the current items in the mod queue, even if they've been listed already
     queue = Same as 'report'
         """
-   
+    total = 0
     elif 'report' in message_text or 'queue' in message_text:
         no_repost = True
         if 'full' in message_text:
             no_repost = False
         request_type = "report"
         try:
-            message = reddit.get_modqueue(channel_id, no_repost)
+            total, message = reddit.get_modqueue(channel_id, no_repost)
         except Exception as e:
             import traceback
             message = f"Could not grab the modqueue. Exception: {e}. Full traceback:\n " + traceback.format_exc()
@@ -115,14 +118,14 @@ I can respond to:
         message = random.choice(messages)
     
     try:
-        slack_post_modqueue(web_client, channel_id, message, type=request_type)
+        slack_post_modqueue(web_client, channel_id, message, type=request_type, total=total)
     except:
         print("Encountered exception. Trying to post to slack again")
         time.sleep(1)
         try:
             ## Only do this for the modqueue
             if 'report' in message_text:
-                slack_post_modqueue(web_client, channel_id, message, type=request_type)
+                slack_post_modqueue(web_client, channel_id, message, type=request_type, total=total)
         except Exception as e:
             print(f"Encountered exception on 2nd try: Exception: {e}")
 

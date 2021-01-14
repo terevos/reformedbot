@@ -84,9 +84,11 @@ if 'report' in message_text or 'queue' in message_text:
     no_repost = args.no_repost
     if 'full' in message_text:
         no_repost = False
-    message = reddit.get_modqueue(args.channel, no_repost)
+    total, message = reddit.get_modqueue(args.channel, no_repost)
     if isinstance(message, list):
-        if len(message) < 2:
+        if total > 0:
+            response = slack_client.chat_postMessage(channel=args.channel, text=f"Total in the Queue: {total}")
+        elif len(message) < 2:
             print("No reports")
             response = ""
         else:

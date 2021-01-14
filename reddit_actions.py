@@ -24,7 +24,9 @@ class RedditActions(object):
         if channel not in self.posted_to_slack:
             self.posted_to_slack[channel] = {}
         messages_dict = {}
+        total = 0
         for idx, reported_item in enumerate(self.sub.mod.modqueue()):
+            total += 1
             id = reported_item.id
             queue_num = len(self.posted_to_slack[channel])+1
             messages_dict[id] = {
@@ -80,7 +82,7 @@ class RedditActions(object):
                 }
 
         ## Take the messages and sort them in prep for posting to Slack
-        sorted_messages = ["=== MODQUEUE ==="]
+        sorted_messages = [f"=== MODQUEUE - Total Entries: {total} ==="]
         for index in range(len(self.posted_to_slack[channel])+10):
             for key,val in messages_dict.items():
                 if index == val['queue_num']:
@@ -89,7 +91,7 @@ class RedditActions(object):
 
         self.write_modqueue_file(self.posted_to_slack)
 
-        return sorted_messages
+        return total, sorted_messages
 
         
 
