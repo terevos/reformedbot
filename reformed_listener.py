@@ -73,6 +73,7 @@ def say_hello(**payload):
     if dm_bot not in message_text:
         return
 
+    total = 0
     if 'hello' in message_text:
         print("Hello")
         message = f"Hi <@{user}>!"
@@ -87,7 +88,6 @@ I can respond to:
     report full = I'll list out the current items in the mod queue, even if they've been listed already
     queue = Same as 'report'
         """
-    total = 0
     elif 'report' in message_text or 'queue' in message_text:
         no_repost = True
         if 'full' in message_text:
