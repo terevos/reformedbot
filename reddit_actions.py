@@ -145,6 +145,10 @@ class RedditActions(object):
 
     ### Problem here is that new replies in a conversation are not shown because we dismiss it based on the Conv ID already being send to slack. But we need to base that on message id, not conv id
     def get_conversations(self, channel):
+        if channel not in self.posted_to_slack:
+            self.posted_to_slack[channel] = {}
+        if 'modmail' not in self.posted_to_slack[channel]:
+            self.posted_to_slack[channel]['modmail'] = []
         ### Read from today's file into a DICT
         self.posted_to_slack = self.get_modqueue_file()
         ### Initialize the channel in the DICT
