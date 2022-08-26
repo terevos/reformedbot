@@ -50,7 +50,7 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
                         "I'm tired. Leave me alone. Also... there's no mail so just chill."
                     ]
                 else:
-                    messages = ["Total in modmail: {total}."]
+                    messages = [f"Total in modmail: {total}."]
             message = random.choice(messages)
             slack_post_message(web_client, channel_id, message)
         else:
