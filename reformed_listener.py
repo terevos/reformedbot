@@ -49,8 +49,8 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
                         "My dog ate the mail.",
                         "I'm tired. Leave me alone. Also... there's no mail so just chill."
                     ]
-            else:
-                messages = ["Total in modmail: {total}."]
+                else:
+                    messages = ["Total in modmail: {total}."]
             message = random.choice(messages)
             slack_post_message(web_client, channel_id, message)
         else:
@@ -103,6 +103,7 @@ I can respond to:
         request_type = "mail"
         try:
             message = reddit.get_conversations(channel_id)
+            total = len(message)
         except Exception as e:
             import traceback
             message = f"Could not grab mod mail. Exception: {e}. Full traceback:\n " + traceback.format_exc()
