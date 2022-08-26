@@ -41,15 +41,16 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
                 else:
                     messages = [f"Total in the queue: {total}. Run 'report full' to see which ones."]
             elif type == 'mail':
-                messages = ["I give you reports all day, now you want me to give you mail? Your mailbox is empty.",
-                    "Nothing here. Go away.",
-                    "Mail? We don't need no stinking mail.",
-                    "Mail??  uhh... I put it somewhere... uhh... Nope. No mail. :-D",
-                    "My dog ate the mail.",
-                    "I'm tired. Leave me alone. Also... there's no mail so just chill."
-                ]
+                if total == 0:
+                    messages = ["I give you reports all day, now you want me to give you mail? Your mailbox is empty.",
+                        "Nothing here. Go away.",
+                        "Mail? We don't need no stinking mail.",
+                        "Mail??  uhh... I put it somewhere... uhh... Nope. No mail. :-D",
+                        "My dog ate the mail.",
+                        "I'm tired. Leave me alone. Also... there's no mail so just chill."
+                    ]
             else:
-                messages = ["I just don't know what to say"]
+                messages = ["Total in modmail: {total}."]
             message = random.choice(messages)
             slack_post_message(web_client, channel_id, message)
         else:
@@ -98,10 +99,10 @@ I can respond to:
         except Exception as e:
             import traceback
             message = f"Could not grab the modqueue. Exception: {e}. Full traceback:\n " + traceback.format_exc()
-    elif 'mail' in message_text:
+    elif 'mail' in message_text or 'conv' in message_text or 'modmail' in message_text:
         request_type = "mail"
         try:
-            message = reddit.get_modmail(channel_id)
+            message = reddit.get_conversations(channel_id)
         except Exception as e:
             import traceback
             message = f"Could not grab mod mail. Exception: {e}. Full traceback:\n " + traceback.format_exc()
