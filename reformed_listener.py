@@ -103,7 +103,7 @@ I can respond to:
         request_type = "mail"
         try:
             message = reddit.get_conversations(channel_id)
-            total = len(message)
+            total = len(message)-1
         except Exception as e:
             import traceback
             message = f"Could not grab mod mail. Exception: {e}. Full traceback:\n " + traceback.format_exc()
