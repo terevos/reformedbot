@@ -144,16 +144,14 @@ class RedditActions(object):
 
 
     ### Problem here is that new replies in a conversation are not shown because we dismiss it based on the Conv ID already being send to slack. But we need to base that on message id, not conv id
-    def get_conversations(self, channel):
-        if channel not in self.posted_to_slack:
-            self.posted_to_slack[channel] = {}
-        if 'modmail_conv' not in self.posted_to_slack[channel]:
-            self.posted_to_slack[channel]['modmail_conv'] = {}
+    def get_conversations(self, channel): 
         ### Read from today's file into a DICT
         self.posted_to_slack = self.get_modqueue_file()
         ### Initialize the channel in the DICT
         if channel not in self.posted_to_slack:
             self.posted_to_slack[channel] = {'modmail_conv': {} }
+        if 'modmail_conv' not in self.posted_to_slack[channel]:
+            self.posted_to_slack[channel]['modmail_conv'] = {}
         messages_dict = { "modmail_conv": {} }
         for mod_conv in self.sub.modmail.conversations():
             messages_dict['modmail_conv'][mod_conv.id] = {
@@ -174,13 +172,13 @@ class RedditActions(object):
                             "---------------------------------------------------\n" \
                             f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. User: " \
                             f"<https://reddit.com/u/{message.author}|{message.author}> " \
-                            f"Message ID: {message.id} already posted in Slack\n"
+                            f"Message: {mod_conv.subject},  ID: {message.id} already posted in Slack\n"
                     else:
                         messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = \
                             "---------------------------------------------------\n" \
                             f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Message\n" \
                             f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n" \
-                            f"Message: \n{message.body_markdown}"
+                            f"Message: {mod_conv.subject}\n{message.body_markdown}"
                         self.posted_to_slack[channel]['modmail_conv'][mod_conv.id]['messages'][message.id] = \
                             messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id]
                 
@@ -194,7 +192,7 @@ class RedditActions(object):
                             "---------------------------------------------------\n" \
                             f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Message\n" \
                             f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n" \
-                            f"Message: \n{message.body_markdown}"
+                            f"Message: {mod_conv.subject}\n{message.body_markdown}"
                     self.posted_to_slack[channel]['modmail_conv'][mod_conv.id]['messages'][message.id] = \
                             messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id]
 
