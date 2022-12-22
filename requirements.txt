@@ -1,2 +1,4 @@
 praw
 slackeventsapi
+slack
+slackclient
