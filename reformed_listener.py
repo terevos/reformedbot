@@ -31,6 +31,15 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
         if len(message) == 1:
             if type == 'report':
                 if total == 0:
+                    messages = ["Nothing in the report queue. I wish you a pleasant day.",
+                                "Nothing here, I am pleased to report.",
+                                "There is no queue! Hurray!",
+                                "Amazingly, nothing has been reported.",
+                                "I am happy to report that there are no reports. Take a break and relax.",
+                                "Anything to serve you. Except that I have no reports to serve you with.",
+                                "I have no reports, but I could make something up if you really want."
+                    ]
+                    """
                     messages = ["Nothing in the report queue. Go take a nap.",
                         "Nothing here. Go away.",
                         "Queue? We don't need no stinking queue.",
@@ -38,10 +47,19 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
                         "My dog ate the reports.",
                         "I'm tired. Leave me alone. Also... there's no reports so just chill."
                     ]
+                    """
                 else:
                     messages = [f"Total in the queue: {total}. Run 'report full' to see which ones."]
             elif type == 'mail':
                 if total == 0:
+                    messages = ["Reports and mail are my joy. Alas, I have no mail to report.",
+                                "No mail.",
+                                "Your mailbox is empty.",
+                                "You have NO mail.",
+                                "There is no mail to report, but I'm sure that doesn't mean that no one loves you. I love you!",
+                                "You've always been my favorite mod. But I don't have any mail for you."
+                    ]
+                    """
                     messages = ["I give you reports all day, now you want me to give you mail? Your mailbox is empty.",
                         "Nothing here. Go away.",
                         "Mail? We don't need no stinking mail.",
@@ -49,6 +67,7 @@ def slack_post_modqueue(web_client, channel_id, message, type='report', total=0)
                         "My dog ate the mail.",
                         "I'm tired. Leave me alone. Also... there's no mail so just chill."
                     ]
+                    """
                 else:
                     messages = [f"Total in modmail: {total}."]
             message = random.choice(messages)
@@ -110,6 +129,13 @@ I can respond to:
     elif 'earl' in message_text:
         message = "Earl?  I don't know any Earls. I'm not British, you know."
     else:
+        messages = ["I do not know that command.",
+                    "I wish I could help you, but I don't understand.",
+                    "I apologize. I'm not familiar with that command",
+                    "I'm sorry. I don't know what that means.",
+                    "Your sin smells to high heaven."
+        ]
+        """
         messages = ["I don't know that command yet. Please don't abuse me...  I already have PTSD",
             "Huh?",
             "What are you talking about?",
@@ -117,6 +143,7 @@ I can respond to:
             "I want my mommy.",
             "Help help, I'm being oppressed!"
         ]
+        """
         message = random.choice(messages)
     
     try:
