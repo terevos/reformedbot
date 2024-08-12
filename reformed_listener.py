@@ -104,11 +104,11 @@ where all your dreams come true.
 I can respond to:
     hello = I'll say hi back
     help = You're looking at it
-    report = I'll list out the current items in the mod queue (not ones posted already)
+    report (or '-r') = I'll list out the current items in the mod queue (not ones posted already)
     report full = I'll list out the current items in the mod queue, even if they've been listed already
     queue = Same as 'report'
         """
-    elif 'report' in message_text or 'queue' in message_text:
+    elif 'report' in message_text or 'queue' in message_text or '-r' in message_text:
         no_repost = True
         if 'full' in message_text:
             no_repost = False
