@@ -11,6 +11,12 @@ from slackeventsapi import SlackEventAdapter
 from reddit_actions import RedditActions
 
 
+def slack_post_message(web_client, channel, text):
+    web_client.chat_postMessage(
+        channel=channel,
+        text = text
+    )
+
 def vote_button(channel):
     #import pdb; pdb.set_trace()
     response = slack_client.chat_postMessage(channel=channel, command="", text='/poll-standuply "test" "a" "b" "c"') #blocks=[])
@@ -87,34 +93,35 @@ if 'report' in message_text or 'queue' in message_text:
     total, message = reddit.get_modqueue(args.channel, no_repost)
     if isinstance(message, list):
         if total > 0:
-            response = slack_client.chat_postMessage(channel=args.channel, text=f"Total in the Queue: {total}")
-        elif len(message) < 2:
+            response = slack_post_message(slack_client, channel=args.channel, text=f"Total in the Queue: {total}")
+        
+        if len(message) < 2:
             print("No reports")
             response = ""
         else:
             for one in message:
-                response = slack_client.chat_postMessage(channel=args.channel, text=one)
+                response = slack_post_message(slack_client, channel=args.channel, text=one)
     else:
-        response = slack_client.chat_postMessage(channel=args.channel, text=message)
+        response = slack_post_message(slack_client, channel=args.channel, text=message)
 elif 'mail' in message_text:
     message = reddit.get_modmail(args.channel)
     if isinstance(message, list):
         for one in message:
-            response = slack_client.chat_postMessage(channel=args.channel, text=one)
+            response = slack_post_message(slack_client, channel=args.channel, text=one)
     else:
-        response = slack_client.chat_postMessage(channel=args.channel, text=message)
+        response = slack_post_message(slack_client, channel=args.channel, text=message)
 elif 'conv' in message_text:
     message = reddit.get_conversations(args.channel)
     if isinstance(message, list):
         for one in message:
-            response = slack_client.chat_postMessage(channel=args.channel, text=one)
+            response = slack_post_message(slack_client, channel=args.channel, text=one)
     else:
-        response = slack_client.chat_postMessage(channel=args.channel, text=message)
+        response = slack_post_message(slack_client, channel=args.channel, text=message)
 elif 'button' in message_text:
     message = vote_button(args.channel)
 else:
     message = "Don't know that command"
-    response = slack_client.chat_postMessage(channel=args.channel, text=message)
+    response = slack_post_message(slack_client, channel=args.channel, text=message)
     
 print(response)
 

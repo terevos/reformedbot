@@ -26,6 +26,10 @@ class RedditActions(object):
         messages_dict = {}
         total = 0
         for idx, reported_item in enumerate(self.sub.mod.modqueue()):
+            """
+                ### reported_item directory:
+                ['MISSING_COMMENT_MESSAGE', 'STR_FIELD', '__class__', '__delattr__', '__dict__', '__dir__', '__doc__', '__eq__', '__format__', '__ge__', '__getattr__', '__getattribute__', '__gt__', '__hash__', '__init__', '__init_subclass__', '__le__', '__lt__', '__module__', '__ne__', '__new__', '__reduce__', '__reduce_ex__', '__repr__', '__setattr__', '__sizeof__', '__str__', '__subclasshook__', '__weakref__', '_extract_submission_id', '_fetch', '_fetch_data', '_fetch_info', '_fetched', '_kind', '_reddit', '_replies', '_reset_attributes', '_safely_add_arguments', '_submission', '_url_parts', '_vote', 'all_awardings', 'approved', 'approved_at_utc', 'approved_by', 'archived', 'associated_award', 'author', 'author_flair_background_color', 'author_flair_css_class', 'author_flair_richtext', 'author_flair_template_id', 'author_flair_text', 'author_flair_text_color', 'author_flair_type', 'author_fullname', 'author_is_blocked', 'author_patreon_flair', 'author_premium', 'award', 'awarders', 'ban_note', 'banned_at_utc', 'banned_by', 'block', 'body', 'body_html', 'can_gild', 'can_mod_post', 'clear_vote', 'collapse', 'collapsed', 'collapsed_because_crowd_control', 'collapsed_reason', 'collapsed_reason_code', 'comment_type', 'controversiality', 'created', 'created_utc', 'delete', 'disable_inbox_replies', 'distinguished', 'downs', 'downvote', 'edit', 'edited', 'enable_inbox_replies', 'fullname', 'gild', 'gilded', 'gildings', 'id', 'id_from_url', 'ignore_reports', 'is_root', 'is_submitter', 'likes', 'link_author', 'link_id', 'link_permalink', 'link_title', 'link_url', 'locked', 'mark_read', 'mark_unread', 'mod', 'mod_note', 'mod_reason_by', 'mod_reason_title', 'mod_reports', 'name', 'no_follow', 'num_comments', 'num_reports', 'over_18', 'parent', 'parent_id', 'parse', 'permalink', 'quarantine', 'refresh', 'removal_reason', 'removed', 'replies', 'reply', 'report', 'report_reasons', 'save', 'saved', 'score', 'score_hidden', 'send_replies', 'spam', 'stickied', 'submission', 'subreddit', 'subreddit_id', 'subreddit_name_prefixed', 'subreddit_type', 'top_awarded_type', 'total_awards_received', 'treatment_tags', 'unblock_subreddit', 'uncollapse', 'unrepliable_reason', 'unsave', 'ups', 'upvote', 'user_reports']
+            """
             total += 1
             id = reported_item.id
             queue_num = len(self.posted_to_slack[channel])+1
@@ -46,11 +50,19 @@ class RedditActions(object):
                 else:
                     messages_dict[id]["messages"].append(f"Item: <{self.posted_to_slack[channel][id]['report_link']}|{id}> already posted in Slack\n")
             else:
+                ## Add link to Slack messages
                 messages_dict[id]["messages"].append(report_link)
+                ## Add author to Slack messages
                 if reported_item.author == None: ## weird exception where there's no author
                     messages_dict[id]["messages"].append(f"User: NONE FOUND, Item ID: {reported_item.id}")
                 else:
                     messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
+
+                ## Add item creation date to Slack messages
+                human_date = date.fromtimestamp(reported_item.created)
+                messages_dict[id]["messages"].append(f"Reported Item Created Date: {human_date}, Edited: {reported_item.edited}")
+                
+                ## Add post or comment to Slack messages
                 if isinstance(reported_item, praw.models.reddit.comment.Comment):
                     comment_body = []
                     for line in reported_item.body.splitlines():
@@ -58,15 +70,18 @@ class RedditActions(object):
                             comment_body.append(line)
                         else:
                             comment_body.append("_ " + line + " _")
-                    messages_dict[id]["messages"].append("Type: Comment - " + "\n".join(comment_body))
+                    messages_dict[id]["messages"].append("Type: Comment - \n" + "\n".join(comment_body))
                 elif isinstance(reported_item, praw.models.reddit.submission.Submission):
                     messages_dict[id]["messages"].append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
                 else:
                     messages_dict[id]["messages"].append(f"Type: Unkown")
+
+                ## Add user reports to Slack messages
                 for uidx, r in enumerate(reported_item.user_reports):
                     if uidx == 0:
                         messages_dict[id]["messages"].append("User Reports:")
                     messages_dict[id]["messages"].append(f"  {uidx+1}. {r[0]}")
+                ## Add mod reports to Slack messages
                 for midx, r in enumerate(reported_item.mod_reports):
                     if midx == 0:
                         messages_dict[id]["messages"].append("Mod Reports:")
