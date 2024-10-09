@@ -1,7 +1,7 @@
 import praw
 import json
 import os
-from datetime import date
+from datetime import datetime, date
 
 class RedditActions(object):
     mod_list = ['terevos2', 'bishopofreddit', 'friardon', 'superlewis', 'jcmathetes', 'drkc9n', 'partypastor', 'ciroflexo', "deolater", "22duckys"]
@@ -59,8 +59,13 @@ class RedditActions(object):
                     messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
 
                 ## Add item creation date to Slack messages
-                human_date = date.fromtimestamp(reported_item.created)
-                messages_dict[id]["messages"].append(f"Reported Item Created Date: {human_date}, Edited: {reported_item.edited}")
+                created_date = datetime.fromtimestamp(reported_item.created)
+                
+                if reported_item.edited != False:
+                    updated_date = datetime.fromtimestamp(reported_item.edited)
+                else:
+                    updated_date = reported_item.edited
+                messages_dict[id]["messages"].append(f"Reported Item Created Date: {created_date}, Edited: {updated_date}")
                 
                 ## Add post or comment to Slack messages
                 if isinstance(reported_item, praw.models.reddit.comment.Comment):
