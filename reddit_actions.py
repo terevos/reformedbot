@@ -13,7 +13,101 @@ class RedditActions(object):
         self.no_repost = no_repost
 
 
-    def get_modqueue(self, channel, no_repost=None):
+    def _build_modqueue_blocks(self, item_id, author, report_link, item_type, content, user_reports, mod_reports, queue_num):
+        """Build a Slack Block Kit block for a single modqueue item."""
+        report_lines = []
+        for r in user_reports:
+            report_lines.append(f"• User: {r[0]}")
+        for r in mod_reports:
+            mod_name = r[1] if len(r) > 1 else "UNKNOWN"
+            report_lines.append(f"• Mod ({mod_name}): {r[0]}")
+        reports_text = "\n".join(report_lines) if report_lines else "_No report text_"
+
+        text = (
+            f"*#{queue_num} | {item_type}* | <{report_link}|View on Reddit>\n"
+            f"*User:* <https://reddit.com/u/{author}|u/{author}>\n"
+            f"{content}\n"
+            f"*Reports:*\n{reports_text}"
+        )
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text}
+            },
+            {
+                "type": "actions",
+                "block_id": f"modqueue_{item_id}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve"},
+                        "style": "primary",
+                        "action_id": "approve_item",
+                        "value": item_id
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Remove"},
+                        "style": "danger",
+                        "action_id": "remove_item",
+                        "value": item_id
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Warn User"},
+                        "action_id": "warn_user",
+                        "value": author
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Ban User"},
+                        "style": "danger",
+                        "action_id": "ban_user",
+                        "value": author
+                    }
+                ]
+            },
+            {"type": "divider"}
+        ]
+        return blocks
+
+    def _build_modmail_blocks(self, conv_id, message_id, author, subject, body, date):
+        """Build a Slack Block Kit block for a single modmail message."""
+        text = (
+            f"*New Modmail* | <https://mod.reddit.com/mail/perma/{conv_id}|View>\n"
+            f"*From:* <https://reddit.com/u/{author}|u/{author}> | *Subject:* {subject}\n"
+            f"*Date:* {date}\n"
+            f"{body[:500]}{'...' if len(body) > 500 else ''}"
+        )
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": text}
+            },
+            {
+                "type": "actions",
+                "block_id": f"modmail_{conv_id}_{message_id}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Warn User"},
+                        "action_id": "warn_user",
+                        "value": str(author)
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Ban User"},
+                        "style": "danger",
+                        "action_id": "ban_user",
+                        "value": str(author)
+                    }
+                ]
+            },
+            {"type": "divider"}
+        ]
+        return blocks
+
+    def get_modqueue(self, channel, no_repost=None, as_blocks=False):
         if no_repost is None:
             no_repost = self.no_repost
         #logging.INFO("get_modqueue")
@@ -35,11 +129,12 @@ class RedditActions(object):
             queue_num = len(self.posted_to_slack[channel])+1
             messages_dict[id] = {
                 "queue_num": queue_num,
-                "messages": []
+                "messages": [],
+                "block_data": None
             }
             report_link = f"https://reddit.com{reported_item.permalink}?context=3"
-            
-            
+
+
             ### Mention it's been posted already
             if reported_item.id in self.posted_to_slack[channel].keys():
                 ## If already posted to slack, update the queue_num to match
@@ -53,33 +148,42 @@ class RedditActions(object):
                 ## Add link to Slack messages
                 messages_dict[id]["messages"].append(report_link)
                 ## Add author to Slack messages
+                author_name = None
                 if reported_item.author == None: ## weird exception where there's no author
                     messages_dict[id]["messages"].append(f"User: NONE FOUND, Item ID: {reported_item.id}")
+                    author_name = "[deleted]"
                 else:
-                    messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{reported_item.author.name}|{reported_item.author.name}>, Item ID: {reported_item.id}")
+                    author_name = reported_item.author.name
+                    messages_dict[id]["messages"].append(f"User: <https://reddit.com/u/{author_name}|{author_name}>, Item ID: {reported_item.id}")
 
                 ## Add item creation date to Slack messages
                 created_date = datetime.fromtimestamp(reported_item.created)
-                
+
                 if reported_item.edited != False:
                     updated_date = datetime.fromtimestamp(reported_item.edited)
                 else:
                     updated_date = reported_item.edited
                 messages_dict[id]["messages"].append(f"Reported Item Created Date: {created_date}, Edited: {updated_date}")
-                
+
                 ## Add post or comment to Slack messages
+                item_type = "Unknown"
+                content = ""
                 if isinstance(reported_item, praw.models.reddit.comment.Comment):
+                    item_type = "comment"
                     comment_body = []
                     for line in reported_item.body.splitlines():
                         if line == "":
                             comment_body.append(line)
                         else:
                             comment_body.append("_ " + line + " _")
-                    messages_dict[id]["messages"].append("Type: Comment - \n" + "\n".join(comment_body))
+                    content = "\n".join(comment_body)
+                    messages_dict[id]["messages"].append("Type: Comment - \n" + content)
                 elif isinstance(reported_item, praw.models.reddit.submission.Submission):
-                    messages_dict[id]["messages"].append(f"Type: Submission - Title: {reported_item.title} - <{reported_item.url}|URL>")
+                    item_type = "submission"
+                    content = f"Title: {reported_item.title} — <{reported_item.url}|URL>"
+                    messages_dict[id]["messages"].append(f"Type: Submission - {content}")
                 else:
-                    messages_dict[id]["messages"].append(f"Type: Unkown")
+                    messages_dict[id]["messages"].append(f"Type: Unknown")
 
                 ## Add user reports to Slack messages
                 for uidx, r in enumerate(reported_item.user_reports):
@@ -94,23 +198,46 @@ class RedditActions(object):
                         messages_dict[id]["messages"].append(f"   {r[1]}: {r[0]}")
                     else:
                         messages_dict[id]["messages"].append(f"   UNKNOWN: {r[0]}")
-                
+
                 messages_dict[id]["messages"].append("\n")
+                messages_dict[id]["block_data"] = {
+                    "author": author_name,
+                    "report_link": report_link,
+                    "item_type": item_type,
+                    "content": content,
+                    "user_reports": list(reported_item.user_reports),
+                    "mod_reports": list(reported_item.mod_reports),
+                }
                 self.posted_to_slack[channel][reported_item.id] = {
                     "queue_num": messages_dict[id]['queue_num'],
-                    "report_link": report_link
+                    "report_link": report_link,
+                    "item_type": item_type
                 }
 
         ## Take the messages and sort them in prep for posting to Slack
         sorted_messages = [f"=== MODQUEUE - Total Entries: {total} ==="]
+        sorted_blocks = []
         for index in range(len(self.posted_to_slack[channel])+10):
-            for key,val in messages_dict.items():
+            for key, val in messages_dict.items():
                 if index == val['queue_num']:
                     sorted_messages.append("{v}. {m}".format(v=val['queue_num'], m="\n".join(val['messages'])))
-                    #sorted_messages.extend(val['messages'])
+                    if val.get('block_data'):
+                        bd = val['block_data']
+                        sorted_blocks.append(self._build_modqueue_blocks(
+                            item_id=key,
+                            author=bd['author'],
+                            report_link=bd['report_link'],
+                            item_type=bd['item_type'],
+                            content=bd['content'],
+                            user_reports=bd['user_reports'],
+                            mod_reports=bd['mod_reports'],
+                            queue_num=val['queue_num']
+                        ))
 
         self.write_modqueue_file(self.posted_to_slack)
 
+        if as_blocks:
+            return total, sorted_blocks
         return total, sorted_messages
 
         
@@ -164,7 +291,7 @@ class RedditActions(object):
 
 
     ### Problem here is that new replies in a conversation are not shown because we dismiss it based on the Conv ID already being send to slack. But we need to base that on message id, not conv id
-    def get_conversations(self, channel): 
+    def get_conversations(self, channel, as_blocks=False):
         ### Read from today's file into a DICT
         self.posted_to_slack = self.get_modqueue_file()
         ### Initialize the channel in the DICT
@@ -187,46 +314,124 @@ class RedditActions(object):
                 ## Check all messages in the conversation
                 for message in mod_conv.messages:
                     if message.id in self.posted_to_slack[channel]['modmail_conv'][mod_conv.id]["messages"].keys():
-                        ## If the message id matches, then this message has already been posted to slack
-                        messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = \
-                            "---------------------------------------------------\n" \
-                            f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. User: " \
-                            f"<https://reddit.com/u/{message.author}|{message.author}> " \
-                            f"Message: {mod_conv.subject},  ID: {message.id} already posted in Slack\n"
+                        ## Already posted — skip silently
+                        pass
                     else:
-                        messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = \
-                            "---------------------------------------------------\n" \
-                            f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Message\n" \
-                            f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n" \
-                            f"Message: {mod_conv.subject}\n{message.body_markdown}"
+                        ## New reply in existing conversation
+                        msg_data = {
+                            "text": (
+                                "---------------------------------------------------\n"
+                                f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Reply\n"
+                                f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n"
+                                f"Subject: {mod_conv.subject}\n{message.body_markdown}"
+                            ),
+                            "author": str(message.author),
+                            "subject": mod_conv.subject,
+                            "body": message.body_markdown,
+                            "date": str(message.date)
+                        }
+                        messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = msg_data
                         self.posted_to_slack[channel]['modmail_conv'][mod_conv.id]['messages'][message.id] = \
-                            messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id]
-                
+                            msg_data['text']
+
                 continue
             else:
                 self.posted_to_slack[channel]['modmail_conv'][mod_conv.id] = {
                     "messages": {}
                 }
                 for message in mod_conv.messages:
-                    messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = \
-                            "---------------------------------------------------\n" \
-                            f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Message\n" \
-                            f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n" \
-                            f"Message: {mod_conv.subject}\n{message.body_markdown}"
+                    msg_data = {
+                        "text": (
+                            "---------------------------------------------------\n"
+                            f"<https://mod.reddit.com/mail/perma/{mod_conv.id}|{mod_conv.id}>. \nNew Modmail Message\n"
+                            f"Message ID: {message.id}, Author: <https://reddit.com/u/{message.author}|{message.author}>, Date: {message.date} \n"
+                            f"Subject: {mod_conv.subject}\n{message.body_markdown}"
+                        ),
+                        "author": str(message.author),
+                        "subject": mod_conv.subject,
+                        "body": message.body_markdown,
+                        "date": str(message.date)
+                    }
+                    messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id] = msg_data
                     self.posted_to_slack[channel]['modmail_conv'][mod_conv.id]['messages'][message.id] = \
-                            messages_dict['modmail_conv'][mod_conv.id]["messages"][message.id]
+                        msg_data['text']
 
 
         ## Take the messages and sort them in prep for posting to Slack
         sorted_messages = ["=== MODMAIL CONVERSATIONS ==="]
+        sorted_blocks = []
         for c_id, c_contents in messages_dict['modmail_conv'].items():
-            for m_id, message in c_contents['messages'].items():
-                sorted_messages.append(message)
+            for m_id, message_data in c_contents['messages'].items():
+                if isinstance(message_data, dict):
+                    # Block-ready structured data
+                    sorted_messages.append(message_data.get('text', ''))
+                    if as_blocks:
+                        sorted_blocks.append(self._build_modmail_blocks(
+                            conv_id=c_id,
+                            message_id=m_id,
+                            author=message_data['author'],
+                            subject=message_data['subject'],
+                            body=message_data['body'],
+                            date=message_data['date']
+                        ))
+                else:
+                    sorted_messages.append(message_data)
 
         self.write_modqueue_file(self.posted_to_slack)
 
+        if as_blocks:
+            return sorted_blocks
         return sorted_messages
 
+
+    def approve_item(self, item_id: str) -> str:
+        """Approve a submission or comment by Reddit item ID (e.g. 't3_abc123' or 'abc123')."""
+        # Strip type prefix if present
+        clean_id = item_id.split('_')[-1]
+        try:
+            item = self.sub._reddit.submission(id=clean_id)
+            item.mod.approve()
+            return f"Approved submission {clean_id}"
+        except Exception:
+            item = self.sub._reddit.comment(id=clean_id)
+            item.mod.approve()
+            return f"Approved comment {clean_id}"
+
+    def remove_item(self, item_id: str, reason: str = "", item_type: str = "submission") -> str:
+        """Remove a submission or comment and optionally send a removal reason via modmail."""
+        clean_id = item_id.split('_')[-1]
+        if item_type == "comment":
+            item = self.sub._reddit.comment(id=clean_id)
+        else:
+            item = self.sub._reddit.submission(id=clean_id)
+        item.mod.remove()
+        if reason:
+            try:
+                self.sub.mod.send_removal_message(item, title="Post Removal", message=reason)
+            except Exception:
+                pass  # send_removal_message may not be supported in all PRAW versions
+        return f"Removed {item_type} {clean_id}"
+
+    def warn_user(self, username: str, message: str) -> str:
+        """Send a modmail warning message to a Reddit user."""
+        self.sub.modmail.create(subject="Moderator Warning", body=message, recipient=username)
+        return f"Warning sent to u/{username}"
+
+    def ban_user(self, username: str, reason: str, duration: int = None, note: str = "") -> str:
+        """Ban a user from the subreddit. duration=None is permanent, otherwise days."""
+        self.sub.banned.add(
+            username,
+            ban_reason=reason[:100],
+            note=note,
+            duration=duration
+        )
+        duration_str = f"for {duration} days" if duration else "permanently"
+        return f"Banned u/{username} {duration_str}"
+
+    def unban_user(self, username: str) -> str:
+        """Unban a user from the subreddit."""
+        self.sub.banned.remove(username)
+        return f"Unbanned u/{username}"
 
     def get_modqueue_file(self):
         if not os.path.exists('logs'):
