@@ -38,17 +38,7 @@ class RedditActions:
     # Block Kit builders
     # ------------------------------------------------------------------
 
-    def _build_modqueue_blocks(
-        self,
-        item_id: str,
-        author: str,
-        report_link: str,
-        item_type: str,
-        content: str,
-        user_reports: List[Any],
-        mod_reports: List[Any],
-        queue_num: int,
-    ) -> List[Dict[str, Any]]:
+    def _build_modqueue_blocks(self, item_id: str, author: str, report_link: str, item_type: str, content: str, user_reports: List[Any], mod_reports: List[Any], queue_num: int) -> List[Dict[str, Any]]:
         """Build a Slack Block Kit payload for a single modqueue item.
 
         Returns a three-block list: a section with item details, an actions
@@ -124,15 +114,7 @@ class RedditActions:
         ]
         return blocks
 
-    def _build_modmail_blocks(
-        self,
-        conv_id: str,
-        message_id: str,
-        author: str,
-        subject: str,
-        body: str,
-        date_str: str,
-    ) -> List[Dict[str, Any]]:
+    def _build_modmail_blocks(self, conv_id: str, message_id: str, author: str, subject: str, body: str, date_str: str) -> List[Dict[str, Any]]:
         """Build a Slack Block Kit payload for a single modmail message.
 
         Returns a three-block list: a section with message details, an actions
@@ -188,12 +170,7 @@ class RedditActions:
     # Reddit data fetchers
     # ------------------------------------------------------------------
 
-    def get_modqueue(
-        self,
-        channel: str,
-        no_repost: Optional[bool] = None,
-        as_blocks: bool = False,
-    ) -> Tuple[int, List[Any]]:
+    def get_modqueue(self, channel: str, no_repost: Optional[bool] = None, as_blocks: bool = False) -> Tuple[int, List[Any]]:
         """Fetch all items currently in the subreddit modqueue.
 
         Items already posted to the given Slack *channel* are tracked via the
@@ -343,11 +320,7 @@ class RedditActions:
             return total, sorted_blocks
         return total, sorted_messages
 
-    def get_conversations(
-        self,
-        channel: str,
-        as_blocks: bool = False,
-    ) -> List[Any]:
+    def get_conversations(self, channel: str, as_blocks: bool = False) -> List[Any]:
         """Fetch new modmail conversations and messages for the subreddit.
 
         Deduplication is performed at the individual *message* level (not the
@@ -472,12 +445,7 @@ class RedditActions:
             item.mod.approve()
             return f"Approved comment {clean_id}"
 
-    def remove_item(
-        self,
-        item_id: str,
-        reason: str = "",
-        item_type: str = "submission",
-    ) -> str:
+    def remove_item(self, item_id: str, reason: str = "", item_type: str = "submission") -> str:
         """Remove a submission or comment from the subreddit.
 
         When *reason* is provided, a removal message is sent to the author via
@@ -517,13 +485,7 @@ class RedditActions:
         self.sub.modmail.create(subject="Moderator Warning", body=message, recipient=username)
         return f"Warning sent to u/{username}"
 
-    def ban_user(
-        self,
-        username: str,
-        reason: str,
-        duration: Optional[int] = None,
-        note: str = "",
-    ) -> str:
+    def ban_user(self, username: str, reason: str, duration: Optional[int] = None, note: str = "") -> str:
         """Ban a user from the subreddit.
 
         Args:
