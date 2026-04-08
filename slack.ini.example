@@ -14,8 +14,8 @@ POLL_INTERVAL = 60
 [Channels]
 # Channel IDs (not names) where reports and mail are posted automatically
 # Leave blank to disable auto-posting for that category
-MODQUEUE_CHANNEL = C0123456789
-MODMAIL_CHANNEL  = C9876543210
+MODQUEUE_CHANNEL = modbot-reports
+MODMAIL_CHANNEL  = modbot-mail
 
 [Mods]
 # Map Slack user IDs to Reddit usernames.

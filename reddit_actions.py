@@ -3,6 +3,7 @@ from __future__ import annotations
 import praw
 import json
 import os
+import re
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +22,20 @@ class RedditActions:
         'deolater', '22duckys',
     ]
 
+    # Maps Slack emoji names to vote keys
+    EMOJI_VOTE_MAP: Dict[str, str] = {
+        "white_check_mark": "approve",
+        "x":                "remove",
+        "thought_balloon":  "discuss",
+        "man-shrugging":    "meh",
+        "party_hammer":     "remove_plus_ban",
+        "completed":        "action_completed",
+        "lock":             "lock_thread",
+        "shell":            "warn",
+        "spam":             "spam",
+        "question":         "dont_understand",
+    }
+
     def __init__(self, subreddit: str, no_repost: bool = False) -> None:
         """Initialise the Reddit connection and subreddit handle.
 
@@ -38,11 +53,32 @@ class RedditActions:
     # Block Kit builders
     # ------------------------------------------------------------------
 
-    def _build_modqueue_blocks(self, item_id: str, author: str, report_link: str, item_type: str, content: str, user_reports: List[Any], mod_reports: List[Any], queue_num: int) -> List[Dict[str, Any]]:
+    # (key, display_label) — key is used in button values/action_ids (no special chars)
+    VOTE_OPTIONS: List[Tuple[str, str]] = [
+        ("approve",           "Approve"),
+        ("remove",            "Remove"),
+        ("discuss",           "Discuss"),
+        ("meh",               "Meh"),
+        ("remove_plus_ban",   "Remove + Ban"),
+        ("lock_thread",       "Lock Thread"),
+        ("warn",              "Warn"),
+        ("spam",              "Spam"),
+        ("dont_understand",   "Don't Understand Why It's Here"),
+    ]
+
+    # Voting for any key removes votes for its opposing keys
+    OPPOSING_VOTES: Dict[str, set] = {
+        "approve":         {"remove", "remove_plus_ban", "spam"},
+        "remove":          {"approve"},
+        "remove_plus_ban": {"approve"},
+        "spam":            {"approve"},
+    }
+
+    def _build_modqueue_blocks(self, item_id: str, author: str, report_link: str, item_type: str, content: str, user_reports: List[Any], mod_reports: List[Any], queue_num: int, votes: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
         """Build a Slack Block Kit payload for a single modqueue item.
 
-        Returns a three-block list: a section with item details, an actions
-        row with Approve / Remove / Warn / Ban buttons, and a divider.
+        Returns blocks containing: item details, two rows of vote buttons,
+        a vote tally, action buttons (Approve/Remove/Warn/Ban), and a divider.
 
         Args:
             item_id: Reddit item ID (bare, e.g. ``'abc123'``).
@@ -53,6 +89,7 @@ class RedditActions:
             user_reports: Raw PRAW user-report tuples ``[(reason, count), ...]``.
             mod_reports: Raw PRAW mod-report tuples ``[(reason, mod_name), ...]``.
             queue_num: 1-based position of this item in the modqueue.
+            votes: Optional dict mapping Slack user IDs to their vote choice.
 
         Returns:
             A list of Slack Block Kit block dicts suitable for the ``blocks``
@@ -72,6 +109,13 @@ class RedditActions:
             f"{content}\n"
             f"*Reports:*\n{reports_text}"
         )
+
+        def _vote_option(key: str, display: str) -> Dict[str, Any]:
+            return {
+                "text": {"type": "plain_text", "text": display},
+                "value": f"{item_id}|{item_type}|{key}",
+            }
+
         blocks: List[Dict[str, Any]] = [
             {
                 "type": "section",
@@ -79,40 +123,63 @@ class RedditActions:
             },
             {
                 "type": "actions",
-                "block_id": f"modqueue_{item_id}",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Approve"},
-                        "style": "primary",
-                        "action_id": "approve_item",
-                        "value": item_id
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Remove"},
-                        "style": "danger",
-                        "action_id": "remove_item",
-                        "value": item_id
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Warn User"},
-                        "action_id": "warn_user",
-                        "value": author
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Ban User"},
-                        "style": "danger",
-                        "action_id": "ban_user",
-                        "value": author
-                    }
-                ]
+                "block_id": f"votes_overflow_{item_id}",
+                "elements": [{
+                    "type": "static_select",
+                    "action_id": "cast_vote_overflow",
+                    "placeholder": {"type": "plain_text", "text": "Vote..."},
+                    "options": [_vote_option(k, d) for k, d in self.VOTE_OPTIONS],
+                }],
+            },
+            {
+                "type": "section",
+                "block_id": f"vote_tally_{item_id}",
+                "text": {"type": "mrkdwn", "text": self.format_vote_tally(votes or {})},
+            },
+            {"type": "divider"},
+            {
+                "type": "actions",
+                "block_id": f"modqueue_{item_type}_{item_id}",
+                "elements": [{
+                    "type": "static_select",
+                    "action_id": "modqueue_action",
+                    "placeholder": {"type": "plain_text", "text": "Take action..."},
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "Approve"},   "value": f"approve|{item_id}|{item_type}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Remove"},    "value": f"remove|{item_id}|{item_type}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Warn User"}, "value": f"warn|{item_id}|{item_type}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Ban User"},  "value": f"ban|{item_id}|{item_type}|{author}"},
+                    ],
+                }],
             },
             {"type": "divider"}
         ]
         return blocks
+
+    @staticmethod
+    def format_vote_tally(votes: Dict[str, Any]) -> str:
+        """Return a mrkdwn summary of current votes.
+
+        Groups voters by their choice and lists Slack user mentions next to
+        each option.  Returns ``'_No votes yet_'`` when *votes* is empty.
+
+        Args:
+            votes: Dict mapping Slack user IDs to a list of vote-key strings.
+        """
+        if not votes:
+            return "_No votes yet_"
+        key_to_display = {k: d for k, d in RedditActions.VOTE_OPTIONS}
+        tally: Dict[str, List[str]] = {}
+        for user_id, user_votes in votes.items():
+            keys = user_votes if isinstance(user_votes, list) else [user_votes]
+            for key in keys:
+                # Escape & for mrkdwn rendering
+                display = key_to_display.get(key, key).replace("&", "&amp;")
+                tally.setdefault(display, []).append(f"<@{user_id}>")
+        if not tally:
+            return "_No votes yet_"
+        lines = [f"*{choice}* ({len(voters)}): {', '.join(voters)}" for choice, voters in tally.items()]
+        return "*Votes:*\n" + "\n".join(lines)
 
     def _build_modmail_blocks(self, conv_id: str, message_id: str, author: str, subject: str, body: str, date_str: str) -> List[Dict[str, Any]]:
         """Build a Slack Block Kit payload for a single modmail message.
@@ -146,21 +213,17 @@ class RedditActions:
             {
                 "type": "actions",
                 "block_id": f"modmail_{conv_id}_{message_id}",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Warn User"},
-                        "action_id": "warn_user",
-                        "value": str(author)
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Ban User"},
-                        "style": "danger",
-                        "action_id": "ban_user",
-                        "value": str(author)
-                    }
-                ]
+                "elements": [{
+                    "type": "static_select",
+                    "action_id": "modmail_action",
+                    "placeholder": {"type": "plain_text", "text": "Take action..."},
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "Reply"},     "value": f"reply|{conv_id}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Mute"},      "value": f"mute|{conv_id}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Warn User"}, "value": f"warn|{conv_id}|{author}"},
+                        {"text": {"type": "plain_text", "text": "Ban User"},  "value": f"ban|{conv_id}|{author}"},
+                    ],
+                }],
             },
             {"type": "divider"}
         ]
@@ -419,6 +482,85 @@ class RedditActions:
         return sorted_messages
 
     # ------------------------------------------------------------------
+    # Vote tracking
+    # ------------------------------------------------------------------
+
+    def record_vote(self, channel: str, item_id: str, user_id: str, vote_key: str) -> None:
+        """Record a moderator's vote for a modqueue item.
+
+        Each user holds a list of vote keys. Clicking an already-selected option
+        toggles it off. Clicking a vote that opposes an existing selection
+        removes the opposing vote(s) before adding the new one.
+
+        Args:
+            channel: Slack channel ID the item was posted to.
+            item_id: Reddit item ID (bare).
+            user_id: Slack user ID of the voting moderator.
+            vote_key: The vote key from ``VOTE_OPTIONS`` (e.g. ``'remove_ban'``).
+        """
+        data = self.get_modqueue_file()
+        if channel not in data:
+            data[channel] = {}
+        if item_id not in data[channel]:
+            data[channel][item_id] = {}
+        if "votes" not in data[channel][item_id]:
+            data[channel][item_id]["votes"] = {}
+
+        current = data[channel][item_id]["votes"].get(user_id, [])
+        if isinstance(current, str):
+            current = [current]  # migrate old single-string format
+
+        if vote_key in current:
+            current.remove(vote_key)  # toggle off
+        else:
+            opposing = self.OPPOSING_VOTES.get(vote_key, set())
+            current = [v for v in current if v not in opposing]
+            current.append(vote_key)
+
+        data[channel][item_id]["votes"][user_id] = current
+        self.write_modqueue_file(data)
+
+    def remove_vote(self, channel: str, item_id: str, user_id: str, vote_key: str) -> None:
+        """Remove a specific vote key for a user, ignoring it if not present.
+
+        Args:
+            channel: Slack channel ID.
+            item_id: Reddit item ID (bare).
+            user_id: Slack user ID of the voting moderator.
+            vote_key: The vote key to remove.
+        """
+        data = self.get_modqueue_file()
+        current = data.get(channel, {}).get(item_id, {}).get("votes", {}).get(user_id, [])
+        if isinstance(current, str):
+            current = [current]
+        if vote_key not in current:
+            return
+        current.remove(vote_key)
+        data[channel][item_id]["votes"][user_id] = current
+        self.write_modqueue_file(data)
+
+    def get_item_info(self, channel: str, item_id: str) -> Dict[str, Any]:
+        """Return the stored log entry for *item_id* in *channel*.
+
+        Useful for retrieving ``queue_num``, ``report_link``, and ``item_type``.
+        Returns an empty dict if not found.
+        """
+        return self.get_modqueue_file().get(channel, {}).get(item_id, {})
+
+    def get_votes(self, channel: str, item_id: str) -> Dict[str, str]:
+        """Return the current votes for *item_id* in *channel*.
+
+        Args:
+            channel: Slack channel ID.
+            item_id: Reddit item ID (bare).
+
+        Returns:
+            Dict mapping Slack user IDs to their vote choice, or ``{}`` if none.
+        """
+        data = self.get_modqueue_file()
+        return data.get(channel, {}).get(item_id, {}).get("votes", {})
+
+    # ------------------------------------------------------------------
     # Moderation actions
     # ------------------------------------------------------------------
 
@@ -445,15 +587,32 @@ class RedditActions:
             item.mod.approve()
             return f"Approved comment {clean_id}"
 
-    def remove_item(self, item_id: str, reason: str = "", item_type: str = "submission") -> str:
-        """Remove a submission or comment from the subreddit.
+    def get_removal_reasons(self) -> List[Dict[str, str]]:
+        """Fetch the subreddit's configured removal reasons from Reddit.
 
-        When *reason* is provided, a removal message is sent to the author via
-        modmail using ``subreddit.mod.send_removal_message``.
+        Returns:
+            List of dicts with ``id``, ``title``, and ``message`` keys.
+            Empty list if none are configured or on error.
+        """
+        try:
+            return [
+                {"id": r.id, "title": r.title, "message": r.message}
+                for r in self.sub.mod.removal_reasons
+            ]
+        except Exception:
+            return []
+
+    def remove_item(self, item_id: str, reason_id: str = "", notes: str = "", delivery: str = "silent", item_type: str = "submission") -> str:
+        """Remove a submission or comment from the subreddit.
 
         Args:
             item_id: Reddit item ID, optionally prefixed (e.g. ``'t3_abc123'``).
-            reason: Optional removal reason text sent to the user.
+            reason_id: Reddit removal reason ID to use. Its message text is
+                fetched and sent to the user unless delivery is ``'silent'``.
+            notes: Additional text appended to the reason message.
+            delivery: How to communicate the removal — ``'public'`` posts a
+                distinguished reply, ``'private'`` sends modmail, ``'silent'``
+                removes with no message.
             item_type: ``'submission'`` (default) or ``'comment'``.
 
         Returns:
@@ -465,12 +624,72 @@ class RedditActions:
         else:
             item = self.sub._reddit.submission(id=clean_id)
         item.mod.remove()
-        if reason:
-            try:
-                self.sub.mod.send_removal_message(item, title="Post Removal", message=reason)
-            except Exception:
-                pass  # send_removal_message may not be supported in all PRAW versions
+
+        if delivery != "silent":
+            message = ""
+            if reason_id:
+                for r in self.sub.mod.removal_reasons:
+                    if r.id == reason_id:
+                        message = r.message
+                        break
+            if notes:
+                message = f"{message}\n\n{notes}".strip() if message else notes
+
+            if message:
+                try:
+                    if delivery == "public":
+                        if item_type == "comment":
+                            reply = item.reply(message)
+                            reply.mod.distinguish(sticky=False)
+                        else:
+                            self.sub.mod.send_removal_message(
+                                item, title="Post Removal", message=message, type="public"
+                            )
+                    elif delivery == "private":
+                        if item_type == "comment":
+                            if item.author:
+                                self.sub.modmail.create(
+                                    subject="Regarding your comment",
+                                    body=message,
+                                    recipient=item.author.name,
+                                )
+                        else:
+                            self.sub.mod.send_removal_message(
+                                item, title="Post Removal", message=message, type="private"
+                            )
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Could not send removal message: {e}")
+
         return f"Removed {item_type} {clean_id}"
+
+    def reply_modmail(self, conv_id: str, body: str) -> str:
+        """Send a team reply to a modmail conversation (author hidden).
+
+        Args:
+            conv_id: Reddit modmail conversation ID.
+            body: Body text of the reply.
+
+        Returns:
+            A human-readable confirmation string.
+        """
+        conversation = self.sub.modmail(conv_id)
+        conversation.reply(body=body, author_hidden=True)
+        return f"Reply sent to conversation {conv_id}"
+
+    def mute_conversation(self, conv_id: str, num_hours: int = 72) -> str:
+        """Mute a modmail conversation so the user cannot reply for a period.
+
+        Args:
+            conv_id: Reddit modmail conversation ID.
+            num_hours: Duration to mute (default 72). Reddit accepts 72, 168, or 672.
+
+        Returns:
+            A human-readable confirmation string.
+        """
+        conversation = self.sub.modmail(conv_id)
+        conversation.mute(num_hours=num_hours)
+        return f"Muted conversation {conv_id} for {num_hours} hours"
 
     def warn_user(self, username: str, message: str) -> str:
         """Send a modmail warning message to a Reddit user.

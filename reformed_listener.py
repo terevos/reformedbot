@@ -50,12 +50,18 @@ if config.has_section('Mods'):
     for slack_uid, reddit_name in config.items('Mods'):
         mod_slack_ids[slack_uid.upper()] = reddit_name
 
-reddit: RedditActions = RedditActions('reformed')
+reddit: RedditActions = RedditActions('reformedtesting')
 
 # ---------------------------------------------------------------------------
 # Slack Bolt app
 # ---------------------------------------------------------------------------
 app: App = App(token=slack_token, signing_secret=signing_secret)
+
+
+def _is_allowed_channel(channel_id: str) -> bool:
+    """Return True if *channel_id* is one of the configured mod channels."""
+    allowed = {c for c in (modqueue_channel, modmail_channel) if c}
+    return not allowed or channel_id in allowed
 
 
 def is_authorized_mod(slack_user_id: str) -> bool:
@@ -67,6 +73,7 @@ def is_authorized_mod(slack_user_id: str) -> bool:
     Args:
         slack_user_id: Slack user ID string (e.g. ``'U0123456789'``).
     """
+    logging.info(f"AUTH CHECK: user={slack_user_id.upper()!r}, mod_slack_ids keys={list(mod_slack_ids.keys())}")
     return slack_user_id.upper() in mod_slack_ids
 
 
@@ -74,54 +81,109 @@ def is_authorized_mod(slack_user_id: str) -> bool:
 # Modal builders
 # ---------------------------------------------------------------------------
 
-def build_remove_modal(item_id: str, item_type: str = "submission") -> Dict[str, Any]:
+def build_remove_modal(item_id: str, item_type: str = "submission", channel: str = "", ts: str = "", reddit_link: str = "", reasons: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
     """Build the Slack modal view payload for the Remove action.
 
-    The modal collects a free-text removal reason from the moderator.
-    ``item_id`` and ``item_type`` are stored in ``private_metadata`` so they
-    survive the round-trip and are available in the view-submission handler.
+    Shows a dropdown of the subreddit's configured removal reasons (if any),
+    an optional notes field, and radio buttons for delivery method.
 
     Args:
         item_id: Reddit item ID (bare, e.g. ``'abc123'``).
         item_type: ``'submission'`` (default) or ``'comment'``.
+        channel: Slack channel ID of the originating message.
+        ts: Timestamp of the originating Slack message.
+        reddit_link: Full Reddit permalink for building the confirmation header.
+        reasons: List of ``{'id', 'title', 'message'}`` dicts from Reddit.
 
     Returns:
         A Slack modal view dict suitable for ``client.views_open``.
     """
+    has_preset = bool(reasons)
+    metadata = json.dumps({
+        "item_id": item_id, "item_type": item_type,
+        "channel": channel, "ts": ts, "reddit_link": reddit_link,
+        "has_preset": has_preset,
+    })
+
+    if has_preset:
+        reason_block: Dict[str, Any] = {
+            "type": "input",
+            "block_id": "reason_block",
+            "label": {"type": "plain_text", "text": "Removal Reason"},
+            "element": {
+                "type": "static_select",
+                "action_id": "reason_input",
+                "placeholder": {"type": "plain_text", "text": "Select a reason"},
+                "options": [
+                    {"text": {"type": "plain_text", "text": r["title"][:75]}, "value": r["id"]}
+                    for r in reasons
+                ],
+            },
+        }
+    else:
+        reason_block = {
+            "type": "input",
+            "block_id": "reason_block",
+            "label": {"type": "plain_text", "text": "Removal Reason"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "reason_input",
+                "multiline": True,
+                "placeholder": {"type": "plain_text", "text": "Explain why this is being removed"},
+            },
+        }
+
     return {
         "type": "modal",
         "callback_id": "removal_reason_submitted",
-        "private_metadata": json.dumps({"item_id": item_id, "item_type": item_type}),
-        "title": {"type": "plain_text", "text": "Remove Post"},
+        "private_metadata": metadata,
+        "title": {"type": "plain_text", "text": "Remove"},
         "submit": {"type": "plain_text", "text": "Remove"},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": [
+            reason_block,
             {
                 "type": "input",
-                "block_id": "reason_block",
-                "label": {"type": "plain_text", "text": "Removal Reason"},
+                "block_id": "notes_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Additional Notes"},
                 "element": {
                     "type": "plain_text_input",
-                    "action_id": "reason_input",
+                    "action_id": "notes_input",
                     "multiline": True,
-                    "placeholder": {
-                        "type": "plain_text",
-                        "text": "Explain why this is being removed (sent to user)"
-                    }
-                }
-            }
-        ]
+                    "placeholder": {"type": "plain_text", "text": "Appended to the reason (optional)"},
+                },
+            },
+            {
+                "type": "input",
+                "block_id": "delivery_block",
+                "label": {"type": "plain_text", "text": "Delivery"},
+                "element": {
+                    "type": "radio_buttons",
+                    "action_id": "delivery_input",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "Post Public"}, "value": "public"},
+                        {"text": {"type": "plain_text", "text": "Post Private"}, "value": "private"},
+                        {"text": {"type": "plain_text", "text": "Silent Remove"}, "value": "silent"},
+                    ],
+                },
+            },
+        ],
     }
 
 
-def build_warn_modal(username: str) -> Dict[str, Any]:
+def build_warn_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "") -> Dict[str, Any]:
     """Build the Slack modal view payload for the Warn User action.
 
     The modal collects a free-text warning message from the moderator.
-    ``username`` is stored in ``private_metadata``.
+    ``username``, ``channel``, ``ts``, and ``reddit_link`` are stored in
+    ``private_metadata``.
 
     Args:
         username: Reddit username of the user to warn (without ``u/`` prefix).
+        channel: Slack channel ID of the originating message.
+        ts: Timestamp of the originating Slack message.
+        reddit_link: Full Reddit permalink for building the confirmation header.
 
     Returns:
         A Slack modal view dict suitable for ``client.views_open``.
@@ -129,7 +191,7 @@ def build_warn_modal(username: str) -> Dict[str, Any]:
     return {
         "type": "modal",
         "callback_id": "warn_submitted",
-        "private_metadata": json.dumps({"username": username}),
+        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link}),
         "title": {"type": "plain_text", "text": "Warn User"},
         "submit": {"type": "plain_text", "text": "Send Warning"},
         "close": {"type": "plain_text", "text": "Cancel"},
@@ -153,14 +215,18 @@ def build_warn_modal(username: str) -> Dict[str, Any]:
     }
 
 
-def build_ban_modal(username: str) -> Dict[str, Any]:
+def build_ban_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "") -> Dict[str, Any]:
     """Build the Slack modal view payload for the Ban User action.
 
     The modal collects ban reason, optional duration (days), and an optional
-    internal moderator note. ``username`` is stored in ``private_metadata``.
+    internal moderator note. ``username``, ``channel``, ``ts``, and
+    ``reddit_link`` are stored in ``private_metadata``.
 
     Args:
         username: Reddit username of the user to ban (without ``u/`` prefix).
+        channel: Slack channel ID of the originating message.
+        ts: Timestamp of the originating Slack message.
+        reddit_link: Full Reddit permalink for building the confirmation header.
 
     Returns:
         A Slack modal view dict suitable for ``client.views_open``.
@@ -168,7 +234,7 @@ def build_ban_modal(username: str) -> Dict[str, Any]:
     return {
         "type": "modal",
         "callback_id": "ban_submitted",
-        "private_metadata": json.dumps({"username": username}),
+        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link}),
         "title": {"type": "plain_text", "text": "Ban User"},
         "submit": {"type": "plain_text", "text": "Ban"},
         "close": {"type": "plain_text", "text": "Cancel"},
@@ -212,6 +278,112 @@ def build_ban_modal(username: str) -> Dict[str, Any]:
     }
 
 
+def build_reply_modal(conv_id: str, channel: str = "", ts: str = "") -> Dict[str, Any]:
+    """Build the Slack modal view payload for the modmail Reply action.
+
+    The reply is sent from the mod team (``author_hidden=True``), not the
+    individual moderator.  ``conv_id``, ``channel``, and ``ts`` are stored in
+    ``private_metadata``.
+
+    Args:
+        conv_id: Reddit modmail conversation ID.
+        channel: Slack channel ID of the originating message.
+        ts: Timestamp of the originating Slack message.
+
+    Returns:
+        A Slack modal view dict suitable for ``client.views_open``.
+    """
+    return {
+        "type": "modal",
+        "callback_id": "reply_submitted",
+        "private_metadata": json.dumps({"conv_id": conv_id, "channel": channel, "ts": ts}),
+        "title": {"type": "plain_text", "text": "Reply"},
+        "submit": {"type": "plain_text", "text": "Send Reply"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "_Sent from the mod team (your name will not be shown)_"},
+            },
+            {
+                "type": "input",
+                "block_id": "reply_block",
+                "label": {"type": "plain_text", "text": "Message"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "reply_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "Your reply..."},
+                },
+            },
+        ],
+    }
+
+
+def _reddit_link_from_body(body: Dict[str, Any]) -> str:
+    """Extract the Reddit permalink from the first section block of a message."""
+    blocks = body.get("message", {}).get("blocks", [])
+    if blocks and blocks[0].get("type") == "section":
+        text = blocks[0].get("text", {}).get("text", "")
+        m = re.search(r'<(https://(?:reddit|mod\.reddit)\.com[^|>]+)\|(?:View on Reddit|View)>', text)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _build_item_header(client: Any, item_id: str, reddit_link: str = "", channel: str = "", ts: str = "", queue_num: Optional[int] = None) -> str:
+    """Return a single mrkdwn line: ``#N <reddit_link|id> (<slack_link|Orig message>)``.
+
+    Args:
+        client: Slack WebClient for fetching the message permalink.
+        item_id: Reddit item ID (bare).
+        reddit_link: Full Reddit permalink URL for the item.
+        channel: Slack channel ID of the original message.
+        ts: Timestamp of the original Slack message.
+        queue_num: Queue position to show as ``#N`` prefix.
+    """
+    slack_link = ""
+    if channel and ts:
+        try:
+            slack_link = client.chat_getPermalink(channel=channel, message_ts=ts)["permalink"]
+        except Exception:
+            pass
+    num_part = f"#{queue_num} " if queue_num else ""
+    item_part = f"<{reddit_link}|{item_id}>" if reddit_link else item_id
+    slack_part = f"(<{slack_link}|Orig message>)" if slack_link else ""
+    return " ".join(p for p in [num_part + item_part, slack_part] if p)
+
+
+def _mark_item_as_actioned(client: Any, channel: str, ts: str, header_text: str) -> None:
+    """Update a modqueue item message with a prominent status header and strip buttons.
+
+    Fetches the current message, removes all ``actions`` blocks (vote and
+    moderation buttons), and prepends a ``header`` block so the item is
+    visually distinct from un-actioned items.
+
+    Args:
+        client: Slack WebClient.
+        channel: Channel ID containing the message.
+        ts: Timestamp of the message to update.
+        header_text: Short plain-text status shown in the header block.
+    """
+    try:
+        resp = client.conversations_history(channel=channel, latest=ts, inclusive=True, limit=1)
+        messages = resp.get("messages", [])
+        if not messages:
+            return
+        original_blocks: List[Dict[str, Any]] = messages[0].get("blocks", [])
+        kept = [b for b in original_blocks if b.get("type") != "actions"]
+        new_blocks = (
+            [{"type": "header", "text": {"type": "plain_text", "text": header_text}}]
+            + kept
+            + [{"type": "section", "text": {"type": "mrkdwn", "text": ":completed:"}}]
+        )
+        client.chat_update(channel=channel, ts=ts, blocks=new_blocks, text=header_text)
+    except Exception as e:
+        logging.warning(f"Could not mark item as actioned: {e}")
+
+
 def _replace_buttons_with_status(client: Any, body: Dict[str, Any], status_text: str) -> None:
     """Update a Slack message in-place, replacing action buttons with a status line.
 
@@ -238,16 +410,16 @@ def _replace_buttons_with_status(client: Any, body: Dict[str, Any], status_text:
 
 
 # ---------------------------------------------------------------------------
-# Button action handlers
+# Action dropdown handler
 # ---------------------------------------------------------------------------
 
-@app.action("approve_item")
-def handle_approve(ack: Any, body: Dict[str, Any], client: Any) -> None:
-    """Handle a click on the *Approve* button attached to a modqueue item.
+@app.action("modqueue_action")
+def handle_modqueue_action(ack: Any, body: Dict[str, Any], client: Any) -> None:
+    """Handle a selection from the modqueue action dropdown.
 
-    Verifies that the clicking user is an authorised moderator, approves the
-    Reddit item via PRAW, then replaces the action buttons with a confirmation
-    line. Unauthorised users receive an ephemeral error message.
+    Option values are encoded as ``'{action}|{item_id}|{item_type}|{author}'``.
+    Approve executes immediately; Remove / Warn / Ban open a modal to collect
+    further input before acting.
 
     Args:
         ack: Slack Bolt acknowledgement callable — must be called within 3 s.
@@ -256,57 +428,50 @@ def handle_approve(ack: Any, body: Dict[str, Any], client: Any) -> None:
     """
     ack()
     user_id: str = body["user"]["id"]
+    channel: str = body["container"]["channel_id"]
     if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(
-            channel=body["container"]["channel_id"],
-            user=user_id,
-            text="You are not authorized to take moderation actions."
-        )
+        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
         return
 
-    item_id: str = body["actions"][0]["value"]
+    value: str = body["actions"][0]["selected_option"]["value"]
     try:
-        result = reddit.approve_item(item_id)
-        mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
-        _replace_buttons_with_status(client, body, f":white_check_mark: *Approved* by {mod_reddit} — {result}")
-    except Exception as e:
-        client.chat_postEphemeral(
-            channel=body["container"]["channel_id"],
-            user=user_id,
-            text=f"Failed to approve: {e}"
-        )
-
-
-@app.action("remove_item")
-def handle_remove_click(ack: Any, body: Dict[str, Any], client: Any) -> None:
-    """Handle a click on the *Remove* button attached to a modqueue item.
-
-    Opens a modal so the moderator can provide a removal reason before the
-    item is removed. The actual removal happens in ``handle_removal_submitted``.
-
-    Args:
-        ack: Slack Bolt acknowledgement callable.
-        body: Full Slack action payload.
-        client: Slack ``WebClient`` for API calls.
-    """
-    ack()
-    user_id: str = body["user"]["id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(
-            channel=body["container"]["channel_id"],
-            user=user_id,
-            text="You are not authorized to take moderation actions."
-        )
+        action, item_id, item_type, author = value.split("|", 3)
+    except ValueError:
+        logging.warning(f"modqueue_action: unexpected value format: {value!r}")
         return
 
-    item_id: str = body["actions"][0]["value"]
-    block_id: str = body["actions"][0].get("block_id", "")
-    item_type = "comment" if "comment" in block_id else "submission"
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view=build_remove_modal(item_id, item_type)
-    )
+    ts: str = body["container"]["message_ts"]
+    reddit_link: str = _reddit_link_from_body(body)
 
+    if action == "approve":
+        try:
+            reddit.approve_item(item_id)
+            mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+            info = reddit.get_item_info(channel, item_id)
+            header = _build_item_header(client, item_id, reddit_link=reddit_link, channel=channel, ts=ts, queue_num=info.get("queue_num"))
+            _mark_item_as_actioned(client, channel, ts, f"✅ APPROVED — {mod_reddit}")
+            if modqueue_channel:
+                client.chat_postMessage(channel=modqueue_channel, text=f"{header}\n:white_check_mark: *Approved* by {mod_reddit}")
+        except Exception as e:
+            client.chat_postEphemeral(channel=channel, user=user_id, text=f"Failed to approve: {e}")
+
+    elif action == "remove":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_remove_modal(item_id, item_type, channel=channel, ts=ts, reddit_link=reddit_link, reasons=reddit.get_removal_reasons()),
+        )
+
+    elif action == "warn":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_warn_modal(author, channel=channel, ts=ts, reddit_link=reddit_link),
+        )
+
+    elif action == "ban":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_ban_modal(author, channel=channel, ts=ts, reddit_link=reddit_link),
+        )
 
 @app.view("removal_reason_submitted")
 def handle_removal_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
@@ -325,47 +490,47 @@ def handle_removal_submitted(ack: Any, body: Dict[str, Any], client: Any) -> Non
     metadata: Dict[str, str] = json.loads(body["view"]["private_metadata"])
     item_id: str = metadata["item_id"]
     item_type: str = metadata.get("item_type", "submission")
-    reason: str = body["view"]["state"]["values"]["reason_block"]["reason_input"]["value"]
+    channel: str = metadata.get("channel", "")
+    ts: str = metadata.get("ts", "")
+    reddit_link: str = metadata.get("reddit_link", "")
+    has_preset: bool = metadata.get("has_preset", False)
+    values = body["view"]["state"]["values"]
+
+    # Reason: preset select gives a reason_id; plain text gives the message directly
+    if has_preset:
+        reason_id: str = values["reason_block"]["reason_input"]["selected_option"]["value"]
+        notes: str = values["notes_block"]["notes_input"].get("value") or ""
+    else:
+        reason_id = ""
+        notes = values["reason_block"]["reason_input"].get("value") or ""
+
+    delivery: str = values["delivery_block"]["delivery_input"]["selected_option"]["value"]
 
     try:
-        result = reddit.remove_item(item_id, reason=reason, item_type=item_type)
+        result = reddit.remove_item(item_id, reason_id=reason_id, notes=notes, delivery=delivery, item_type=item_type)
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+        info = reddit.get_item_info(channel, item_id)
+        header = _build_item_header(client, item_id, reddit_link=reddit_link, channel=channel, ts=ts, queue_num=info.get("queue_num"))
+        delivery_label = {"public": "public reply", "private": "private message", "silent": "silently"}.get(delivery, delivery)
+        detail_parts = []
+        if reason_id:
+            detail_parts.append(f"Reason ID: {reason_id}")
+        if notes:
+            detail_parts.append(f"Notes: {notes}")
+        detail_parts.append(f"Delivery: {delivery_label}")
+        details = " | ".join(detail_parts)
+        if channel and ts:
+            _mark_item_as_actioned(client, channel, ts, f"🗑️ REMOVED — {mod_reddit}")
         if modqueue_channel:
             client.chat_postMessage(
                 channel=modqueue_channel,
-                text=f":x: *Removed* by {mod_reddit} — {result}\n*Reason:* {reason}"
+                text=f"{header}\n:x: *Removed* by {mod_reddit}\n{details}"
             )
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
             text=f"<@{user_id}> Failed to remove item `{item_id}`: {e}"
         )
-
-
-@app.action("warn_user")
-def handle_warn_click(ack: Any, body: Dict[str, Any], client: Any) -> None:
-    """Handle a click on the *Warn User* button.
-
-    Opens a modal so the moderator can compose a warning message. The actual
-    modmail is sent in ``handle_warn_submitted``.
-
-    Args:
-        ack: Slack Bolt acknowledgement callable.
-        body: Full Slack action payload.
-        client: Slack ``WebClient`` for API calls.
-    """
-    ack()
-    user_id: str = body["user"]["id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(
-            channel=body["container"]["channel_id"],
-            user=user_id,
-            text="You are not authorized to take moderation actions."
-        )
-        return
-
-    username: str = body["actions"][0]["value"]
-    client.views_open(trigger_id=body["trigger_id"], view=build_warn_modal(username))
 
 
 @app.view("warn_submitted")
@@ -384,48 +549,26 @@ def handle_warn_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
     user_id: str = body["user"]["id"]
     metadata: Dict[str, str] = json.loads(body["view"]["private_metadata"])
     username: str = metadata["username"]
+    channel: str = metadata.get("channel", "")
+    ts: str = metadata.get("ts", "")
+    reddit_link: str = metadata.get("reddit_link", "")
     message: str = body["view"]["state"]["values"]["warn_block"]["warn_input"]["value"]
 
     try:
         result = reddit.warn_user(username, message)
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+        header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
         notify_channel = modqueue_channel or modmail_channel
         if notify_channel:
             client.chat_postMessage(
                 channel=notify_channel,
-                text=f":warning: *Warning sent* by {mod_reddit} — {result}"
+                text=f"{header}\n:warning: *Warning sent* by {mod_reddit}\nRecipient: u/{username}"
             )
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
             text=f"<@{user_id}> Failed to warn u/{username}: {e}"
         )
-
-
-@app.action("ban_user")
-def handle_ban_click(ack: Any, body: Dict[str, Any], client: Any) -> None:
-    """Handle a click on the *Ban User* button.
-
-    Opens a modal so the moderator can provide ban reason, duration, and an
-    optional internal note. The actual ban is applied in ``handle_ban_submitted``.
-
-    Args:
-        ack: Slack Bolt acknowledgement callable.
-        body: Full Slack action payload.
-        client: Slack ``WebClient`` for API calls.
-    """
-    ack()
-    user_id: str = body["user"]["id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(
-            channel=body["container"]["channel_id"],
-            user=user_id,
-            text="You are not authorized to take moderation actions."
-        )
-        return
-
-    username: str = body["actions"][0]["value"]
-    client.views_open(trigger_id=body["trigger_id"], view=build_ban_modal(username))
 
 
 @app.view("ban_submitted")
@@ -445,6 +588,9 @@ def handle_ban_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
     user_id: str = body["user"]["id"]
     metadata: Dict[str, str] = json.loads(body["view"]["private_metadata"])
     username: str = metadata["username"]
+    channel: str = metadata.get("channel", "")
+    ts: str = metadata.get("ts", "")
+    reddit_link: str = metadata.get("reddit_link", "")
     values: Dict[str, Any] = body["view"]["state"]["values"]
     reason: str = values["reason_block"]["reason_input"]["value"]
     duration_str: Optional[str] = values["duration_block"]["duration_input"].get("value")
@@ -460,17 +606,163 @@ def handle_ban_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
     try:
         result = reddit.ban_user(username, reason=reason, duration=duration, note=note)
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+        header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
+        duration_label = f"{duration} days" if duration else "permanent"
+        detail_parts = [f"Reason: {reason}", f"Duration: {duration_label}"]
+        if note:
+            detail_parts.append(f"Note: {note}")
         notify_channel = modqueue_channel or modmail_channel
         if notify_channel:
             client.chat_postMessage(
                 channel=notify_channel,
-                text=f":no_entry: *Banned* by {mod_reddit} — {result}"
+                text=f"{header}\n:no_entry: *Banned* by {mod_reddit}\n{' | '.join(detail_parts)}"
             )
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
             text=f"<@{user_id}> Failed to ban u/{username}: {e}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Modmail action dropdown handler
+# ---------------------------------------------------------------------------
+
+@app.action("modmail_action")
+def handle_modmail_action(ack: Any, body: Dict[str, Any], client: Any) -> None:
+    """Handle a selection from the modmail action dropdown.
+
+    Option values are encoded as ``'{action}|{conv_id}|{author}'``.
+    Reply and Mute act on the conversation; Warn / Ban reuse the modqueue modals.
+
+    Args:
+        ack: Slack Bolt acknowledgement callable.
+        body: Full Slack action payload.
+        client: Slack ``WebClient`` for API calls.
+    """
+    ack()
+    user_id: str = body["user"]["id"]
+    channel: str = body["container"]["channel_id"]
+    if not is_authorized_mod(user_id):
+        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
+        return
+
+    value: str = body["actions"][0]["selected_option"]["value"]
+    try:
+        action, conv_id, author = value.split("|", 2)
+    except ValueError:
+        logging.warning(f"modmail_action: unexpected value format: {value!r}")
+        return
+
+    ts: str = body["container"]["message_ts"]
+
+    if action == "reply":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_reply_modal(conv_id, channel=channel, ts=ts),
+        )
+
+    elif action == "mute":
+        try:
+            reddit.mute_conversation(conv_id)
+            mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+            _replace_buttons_with_status(client, body, f":mute: *Muted* by {mod_reddit}")
+        except Exception as e:
+            client.chat_postEphemeral(channel=channel, user=user_id, text=f"Failed to mute: {e}")
+
+    elif action == "warn":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_warn_modal(author, channel=channel, ts=ts),
+        )
+
+    elif action == "ban":
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_ban_modal(author, channel=channel, ts=ts),
+        )
+
+
+@app.view("reply_submitted")
+def handle_reply_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
+    """Handle submission of the modmail Reply modal.
+
+    Sends a team reply (author hidden) to the Reddit modmail conversation and
+    posts a confirmation to the configured modmail channel.
+
+    Args:
+        ack: Slack Bolt acknowledgement callable.
+        body: Full Slack view-submission payload.
+        client: Slack ``WebClient`` for API calls.
+    """
+    ack()
+    user_id: str = body["user"]["id"]
+    metadata: Dict[str, str] = json.loads(body["view"]["private_metadata"])
+    conv_id: str = metadata["conv_id"]
+    channel: str = metadata.get("channel", "")
+    ts: str = metadata.get("ts", "")
+    message: str = body["view"]["state"]["values"]["reply_block"]["reply_input"]["value"]
+
+    try:
+        reddit.reply_modmail(conv_id, message)
+        mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
+        reply_text = f":speech_balloon: *Reply sent* by {mod_reddit}\n{message}"
+        if channel and ts:
+            # Post as a thread on the original modmail message
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=reply_text)
+            # Also post to the main channel (not threaded)
+            client.chat_postMessage(channel=channel, text=reply_text)
+    except Exception as e:
+        notify_channel = modmail_channel or modqueue_channel
+        if notify_channel:
+            client.chat_postMessage(channel=notify_channel, text=f"<@{user_id}> Failed to send reply to {conv_id}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Vote dropdown handler
+# ---------------------------------------------------------------------------
+
+@app.action("cast_vote_overflow")
+def handle_cast_vote(ack: Any, body: Dict[str, Any], client: Any) -> None:
+    """Record a moderator's vote and update the tally in the Slack message.
+
+    Parses the dropdown selected option value (``'{item_id}|{item_type}|{vote_option}'``),
+    persists the vote, then updates the ``votes_overflow_{item_id}`` block
+    (checkmarks) and ``vote_tally_{item_id}`` block in-place.
+
+    Args:
+        ack: Slack Bolt acknowledgement callable.
+        body: Full Slack action payload.
+        client: Slack ``WebClient`` for API calls.
+    """
+    ack()
+    user_id: str = body["user"]["id"]
+    value: str = body["actions"][0]["selected_option"]["value"]
+
+    try:
+        item_id, item_type, vote_option = value.split("|", 2)
+    except ValueError:
+        logging.warning(f"cast_vote: unexpected value format: {value!r}")
+        return
+
+    channel: str = body["container"]["channel_id"]
+    ts: str = body["container"]["message_ts"]
+
+    reddit.record_vote(channel, item_id, user_id, vote_option)
+    votes = reddit.get_votes(channel, item_id)
+    tally_text = reddit.format_vote_tally(votes)
+
+    tally_block_id = f"vote_tally_{item_id}"
+    new_blocks = [
+        {**b, "text": {"type": "mrkdwn", "text": tally_text}} if b.get("block_id") == tally_block_id else b
+        for b in body["message"].get("blocks", [])
+    ]
+
+    try:
+        client.chat_update(channel=channel, ts=ts, blocks=new_blocks, text="Mod report item")
+    except Exception as e:
+        logging.warning(f"cast_vote: could not update message: {e}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +807,8 @@ def handle_hello(message: Dict[str, Any], say: Any) -> None:
         message: Slack message event payload.
         say: Bolt helper for posting to the same channel.
     """
+    if not _is_allowed_channel(message["channel"]):
+        return
     user = message.get("user", "")
     say(f"Hi <@{user}>!")
 
@@ -527,6 +821,8 @@ def handle_help(message: Dict[str, Any], say: Any) -> None:
         message: Slack message event payload.
         say: Bolt helper for posting to the same channel.
     """
+    if not _is_allowed_channel(message["channel"]):
+        return
     say("""Welcome to ReformedBot — where all your dreams come true.
 
 Commands (mention me + keyword):
@@ -557,6 +853,8 @@ def handle_report(message: Dict[str, Any], say: Any, client: Any) -> None:
         client: Slack ``WebClient`` for sending Block Kit messages.
     """
     channel_id: str = message["channel"]
+    if not _is_allowed_channel(channel_id):
+        return
     text: str = message.get("text", "").lower()
     no_repost: bool = "full" not in text
     try:
@@ -587,6 +885,8 @@ def handle_mail(message: Dict[str, Any], say: Any, client: Any) -> None:
         client: Slack ``WebClient`` for sending Block Kit messages.
     """
     channel_id: str = message["channel"]
+    if not _is_allowed_channel(channel_id):
+        return
     try:
         blocks = reddit.get_conversations(channel_id, as_blocks=True)
         if not blocks:

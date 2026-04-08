@@ -2,3 +2,6 @@
 .*~
 praw.ini
 slack.ini
+Pipfile.lock
+logs/*
+__pycache__/*
