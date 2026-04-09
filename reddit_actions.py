@@ -44,8 +44,8 @@ class RedditActions:
             no_repost: When ``True``, ``get_modqueue`` skips items already
                 posted to Slack by default. Can be overridden per-call.
         """
-        reddit = praw.Reddit('reformedbot', user_agent='reformedbot user agent')
-        self.sub = reddit.subreddit(subreddit)
+        self._reddit = praw.Reddit('reformedbot', user_agent='reformedbot user agent')
+        self.sub = self._reddit.subreddit(subreddit)
         self.posted_to_slack: Dict[str, Any] = {}
         self.no_repost: bool = no_repost
 
@@ -539,6 +539,30 @@ class RedditActions:
         data[channel][item_id]["votes"][user_id] = current
         self.write_modqueue_file(data)
 
+    def set_item_slack_ts(self, channel: str, item_id: str, slack_ts: str, permalink: Optional[str] = None) -> None:
+        """Store the Slack message timestamp (and optional permalink) for a posted modqueue item.
+
+        Args:
+            channel: Slack channel ID the item was posted to.
+            item_id: Reddit item ID (bare).
+            slack_ts: Slack message timestamp returned by ``chat_postMessage``.
+            permalink: Full Slack permalink URL, if available.
+        """
+        data = self.get_modqueue_file()
+        if channel in data and item_id in data[channel]:
+            data[channel][item_id]["slack_ts"] = slack_ts
+            if permalink:
+                data[channel][item_id]["slack_permalink"] = permalink
+            self.write_modqueue_file(data)
+
+    def get_current_modqueue_ids(self) -> List[str]:
+        """Return the IDs of all items currently in the subreddit modqueue.
+
+        Returns:
+            List of bare Reddit item ID strings.
+        """
+        return [item.id for item in self.sub.mod.modqueue()]
+
     def get_item_info(self, channel: str, item_id: str) -> Dict[str, Any]:
         """Return the stored log entry for *item_id* in *channel*.
 
@@ -546,6 +570,52 @@ class RedditActions:
         Returns an empty dict if not found.
         """
         return self.get_modqueue_file().get(channel, {}).get(item_id, {})
+
+    def get_item_blocks_for_reopen(self, channel: str, item_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Fetch a Reddit item by ID and rebuild its full Block Kit payload.
+
+        Used to restore a previously actioned Slack message back to its
+        interactive state when a mod clicks Re-open.
+
+        Args:
+            channel: Slack channel ID (used to look up log data).
+            item_id: Bare Reddit item ID.
+
+        Returns:
+            Block Kit block list, or ``None`` if the item could not be fetched.
+        """
+        item_data = self.get_modqueue_file().get(channel, {}).get(item_id, {})
+        item_type = item_data.get("item_type", "submission")
+        queue_num = item_data.get("queue_num", 1)
+        report_link = item_data.get("report_link", "")
+        votes = item_data.get("votes", {})
+
+        try:
+            if item_type == "comment":
+                reddit_item = self._reddit.comment(id=item_id)
+                comment_body = [
+                    ("_ " + line + " _" if line else line)
+                    for line in reddit_item.body.splitlines()
+                ]
+                content = "\n".join(comment_body)
+            else:
+                reddit_item = self._reddit.submission(id=item_id)
+                content = f"Title: {reddit_item.title} — <{reddit_item.url}|URL>"
+
+            author_name = reddit_item.author.name if reddit_item.author else "[deleted]"
+            return self._build_modqueue_blocks(
+                item_id=item_id,
+                author=author_name,
+                report_link=report_link,
+                item_type=item_type,
+                content=content,
+                user_reports=list(reddit_item.user_reports),
+                mod_reports=list(reddit_item.mod_reports),
+                queue_num=queue_num,
+                votes=votes,
+            )
+        except Exception:
+            return None
 
     def get_votes(self, channel: str, item_id: str) -> Dict[str, str]:
         """Return the current votes for *item_id* in *channel*.

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import re
 import threading
 import time
@@ -172,7 +171,7 @@ def build_remove_modal(item_id: str, item_type: str = "submission", channel: str
     }
 
 
-def build_warn_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "") -> Dict[str, Any]:
+def build_warn_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "", item_id: str = "") -> Dict[str, Any]:
     """Build the Slack modal view payload for the Warn User action.
 
     The modal collects a free-text warning message from the moderator.
@@ -191,7 +190,7 @@ def build_warn_modal(username: str, channel: str = "", ts: str = "", reddit_link
     return {
         "type": "modal",
         "callback_id": "warn_submitted",
-        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link}),
+        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link, "item_id": item_id}),
         "title": {"type": "plain_text", "text": "Warn User"},
         "submit": {"type": "plain_text", "text": "Send Warning"},
         "close": {"type": "plain_text", "text": "Cancel"},
@@ -215,7 +214,7 @@ def build_warn_modal(username: str, channel: str = "", ts: str = "", reddit_link
     }
 
 
-def build_ban_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "") -> Dict[str, Any]:
+def build_ban_modal(username: str, channel: str = "", ts: str = "", reddit_link: str = "", item_id: str = "") -> Dict[str, Any]:
     """Build the Slack modal view payload for the Ban User action.
 
     The modal collects ban reason, optional duration (days), and an optional
@@ -234,7 +233,7 @@ def build_ban_modal(username: str, channel: str = "", ts: str = "", reddit_link:
     return {
         "type": "modal",
         "callback_id": "ban_submitted",
-        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link}),
+        "private_metadata": json.dumps({"username": username, "channel": channel, "ts": ts, "reddit_link": reddit_link, "item_id": item_id}),
         "title": {"type": "plain_text", "text": "Ban User"},
         "submit": {"type": "plain_text", "text": "Ban"},
         "close": {"type": "plain_text", "text": "Cancel"},
@@ -373,11 +372,39 @@ def _mark_item_as_actioned(client: Any, channel: str, ts: str, header_text: str)
         if not messages:
             return
         original_blocks: List[Dict[str, Any]] = messages[0].get("blocks", [])
+
+        # Extract item_id and item_type from the original blocks before stripping actions
+        item_id: Optional[str] = None
+        item_type: str = "submission"
+        for b in original_blocks:
+            bid = b.get("block_id", "")
+            if bid.startswith("vote_tally_"):
+                item_id = bid[len("vote_tally_"):]
+            elif bid.startswith("modqueue_"):
+                parts = bid.split("_", 2)
+                if len(parts) == 3:
+                    item_type = parts[1]
+
         kept = [b for b in original_blocks if b.get("type") != "actions"]
+        reopen_block: List[Dict[str, Any]] = []
+        if item_id:
+            reopen_block = [{
+                "type": "actions",
+                "block_id": f"reopen_{item_id}",
+                "elements": [{
+                    "type": "static_select",
+                    "action_id": "reopen_item",
+                    "placeholder": {"type": "plain_text", "text": "Options..."},
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "Re-open"}, "value": f"{item_id}|{item_type}"},
+                    ],
+                }],
+            }]
         new_blocks = (
             [{"type": "header", "text": {"type": "plain_text", "text": header_text}}]
             + kept
-            + [{"type": "section", "text": {"type": "mrkdwn", "text": ":completed:"}}]
+            + [{"type": "section", "text": {"type": "mrkdwn", "text": ":completed: DONE :completed:"}}]
+            + reopen_block
         )
         client.chat_update(channel=channel, ts=ts, blocks=new_blocks, text=header_text)
     except Exception as e:
@@ -450,8 +477,7 @@ def handle_modqueue_action(ack: Any, body: Dict[str, Any], client: Any) -> None:
             info = reddit.get_item_info(channel, item_id)
             header = _build_item_header(client, item_id, reddit_link=reddit_link, channel=channel, ts=ts, queue_num=info.get("queue_num"))
             _mark_item_as_actioned(client, channel, ts, f"✅ APPROVED — {mod_reddit}")
-            if modqueue_channel:
-                client.chat_postMessage(channel=modqueue_channel, text=f"{header}\n:white_check_mark: *Approved* by {mod_reddit}")
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=f":white_check_mark: *Approved* by {mod_reddit}")
         except Exception as e:
             client.chat_postEphemeral(channel=channel, user=user_id, text=f"Failed to approve: {e}")
 
@@ -464,13 +490,13 @@ def handle_modqueue_action(ack: Any, body: Dict[str, Any], client: Any) -> None:
     elif action == "warn":
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=build_warn_modal(author, channel=channel, ts=ts, reddit_link=reddit_link),
+            view=build_warn_modal(author, channel=channel, ts=ts, reddit_link=reddit_link, item_id=item_id),
         )
 
     elif action == "ban":
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=build_ban_modal(author, channel=channel, ts=ts, reddit_link=reddit_link),
+            view=build_ban_modal(author, channel=channel, ts=ts, reddit_link=reddit_link, item_id=item_id),
         )
 
 @app.view("removal_reason_submitted")
@@ -521,11 +547,7 @@ def handle_removal_submitted(ack: Any, body: Dict[str, Any], client: Any) -> Non
         details = " | ".join(detail_parts)
         if channel and ts:
             _mark_item_as_actioned(client, channel, ts, f"🗑️ REMOVED — {mod_reddit}")
-        if modqueue_channel:
-            client.chat_postMessage(
-                channel=modqueue_channel,
-                text=f"{header}\n:x: *Removed* by {mod_reddit}\n{details}"
-            )
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=f":x: *Removed* by {mod_reddit}\n{details}")
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
@@ -552,18 +574,21 @@ def handle_warn_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
     channel: str = metadata.get("channel", "")
     ts: str = metadata.get("ts", "")
     reddit_link: str = metadata.get("reddit_link", "")
+    item_id: str = metadata.get("item_id", "")
     message: str = body["view"]["state"]["values"]["warn_block"]["warn_input"]["value"]
 
     try:
-        result = reddit.warn_user(username, message)
+        reddit.warn_user(username, message)
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
-        header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
-        notify_channel = modqueue_channel or modmail_channel
-        if notify_channel:
-            client.chat_postMessage(
-                channel=notify_channel,
-                text=f"{header}\n:warning: *Warning sent* by {mod_reddit}\nRecipient: u/{username}"
-            )
+        if item_id:
+            info = reddit.get_item_info(channel, item_id)
+            header = _build_item_header(client, item_id, reddit_link=reddit_link, channel=channel, ts=ts, queue_num=info.get("queue_num"))
+            if channel and ts:
+                _mark_item_as_actioned(client, channel, ts, f":shell: WARNED — {mod_reddit}")
+        else:
+            header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
+        if channel and ts:
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=f":warning: *Warning sent* by {mod_reddit}\nRecipient: u/{username}")
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
@@ -591,6 +616,7 @@ def handle_ban_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
     channel: str = metadata.get("channel", "")
     ts: str = metadata.get("ts", "")
     reddit_link: str = metadata.get("reddit_link", "")
+    item_id: str = metadata.get("item_id", "")
     values: Dict[str, Any] = body["view"]["state"]["values"]
     reason: str = values["reason_block"]["reason_input"]["value"]
     duration_str: Optional[str] = values["duration_block"]["duration_input"].get("value")
@@ -604,19 +630,21 @@ def handle_ban_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
             pass
 
     try:
-        result = reddit.ban_user(username, reason=reason, duration=duration, note=note)
+        reddit.ban_user(username, reason=reason, duration=duration, note=note)
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
-        header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
+        if item_id:
+            info = reddit.get_item_info(channel, item_id)
+            header = _build_item_header(client, item_id, reddit_link=reddit_link, channel=channel, ts=ts, queue_num=info.get("queue_num"))
+            if channel and ts:
+                _mark_item_as_actioned(client, channel, ts, f":no_entry: BANNED — {mod_reddit}")
+        else:
+            header = _build_item_header(client, f"u/{username}", reddit_link=reddit_link, channel=channel, ts=ts)
         duration_label = f"{duration} days" if duration else "permanent"
         detail_parts = [f"Reason: {reason}", f"Duration: {duration_label}"]
         if note:
             detail_parts.append(f"Note: {note}")
-        notify_channel = modqueue_channel or modmail_channel
-        if notify_channel:
-            client.chat_postMessage(
-                channel=notify_channel,
-                text=f"{header}\n:no_entry: *Banned* by {mod_reddit}\n{' | '.join(detail_parts)}"
-            )
+        if channel and ts:
+            client.chat_postMessage(channel=channel, thread_ts=ts, text=f":no_entry: *Banned* by {mod_reddit}\n{' | '.join(detail_parts)}")
     except Exception as e:
         client.chat_postMessage(
             channel=modqueue_channel or user_id,
@@ -708,10 +736,7 @@ def handle_reply_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
         mod_reddit = mod_slack_ids.get(user_id.upper(), f"<@{user_id}>")
         reply_text = f":speech_balloon: *Reply sent* by {mod_reddit}\n{message}"
         if channel and ts:
-            # Post as a thread on the original modmail message
             client.chat_postMessage(channel=channel, thread_ts=ts, text=reply_text)
-            # Also post to the main channel (not threaded)
-            client.chat_postMessage(channel=channel, text=reply_text)
     except Exception as e:
         notify_channel = modmail_channel or modqueue_channel
         if notify_channel:
@@ -764,31 +789,48 @@ def handle_cast_vote(ack: Any, body: Dict[str, Any], client: Any) -> None:
         logging.warning(f"cast_vote: could not update message: {e}")
 
 
+@app.action("reopen_item")
+def handle_reopen_item(ack: Any, body: Dict[str, Any], client: Any) -> None:
+    """Restore an actioned modqueue item to its original interactive state.
+
+    Triggered by the Re-open dropdown appended after a moderation action.
+    Re-fetches the Reddit item via PRAW, rebuilds the full Block Kit payload
+    (including vote and action dropdowns), and updates the message in place.
+
+    Args:
+        ack: Slack Bolt acknowledgement callable.
+        body: Full Slack action payload.
+        client: Slack ``WebClient`` for API calls.
+    """
+    ack()
+    user_id: str = body["user"]["id"]
+    channel: str = body["container"]["channel_id"]
+    if not is_authorized_mod(user_id):
+        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
+        return
+
+    value: str = body["actions"][0]["selected_option"]["value"]
+    try:
+        item_id, item_type = value.split("|", 1)
+    except ValueError:
+        logging.warning(f"reopen_item: unexpected value format: {value!r}")
+        return
+
+    ts: str = body["container"]["message_ts"]
+    blocks = reddit.get_item_blocks_for_reopen(channel, item_id)
+    if not blocks:
+        client.chat_postEphemeral(channel=channel, user=user_id, text="Could not re-open item — it may no longer be accessible on Reddit.")
+        return
+
+    try:
+        client.chat_update(channel=channel, ts=ts, blocks=blocks, text="Mod report item (re-opened)")
+    except Exception as e:
+        logging.warning(f"reopen_item: could not update message: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Text command handlers
 # ---------------------------------------------------------------------------
-
-REPORT_PATTERN: re.Pattern[str] = re.compile(r"(report|queue|-r)", re.IGNORECASE)
-MAIL_PATTERN: re.Pattern[str] = re.compile(r"(mail|conv|modmail)", re.IGNORECASE)
-
-EMPTY_QUEUE_MESSAGES: List[str] = [
-    "Nothing in the report queue. I wish you a pleasant day.",
-    "Nothing here, I am pleased to report.",
-    "There is no queue! Hurray!",
-    "Amazingly, nothing has been reported.",
-    "I am happy to report that there are no reports. Take a break and relax.",
-    "Anything to serve you. Except that I have no reports to serve you with.",
-    "I have no reports, but I could make something up if you really want."
-]
-
-EMPTY_MAIL_MESSAGES: List[str] = [
-    "Reports and mail are my joy. Alas, I have no mail to report.",
-    "No mail.",
-    "Your mailbox is empty.",
-    "You have NO mail.",
-    "There is no mail to report, but I'm sure that doesn't mean that no one loves you. I love you!"
-]
 
 UNKNOWN_MESSAGES: List[str] = [
     "I do not know that command.",
@@ -799,110 +841,115 @@ UNKNOWN_MESSAGES: List[str] = [
 ]
 
 
-@app.message(re.compile(r"hello", re.IGNORECASE))
-def handle_hello(message: Dict[str, Any], say: Any) -> None:
-    """Respond to a greeting message with a personalised hello.
+@app.error
+def handle_error(error: Exception, body: Dict[str, Any]) -> None:
+    logging.error(f"Bolt error: {error} | body: {body}")
+
+
+@app.event("message")
+def handle_message_noop() -> None:
+    pass  # Absorb message events to prevent Bolt warnings; app_mention handles mentions
+
+
+_handled_event_ids: set = set()
+
+
+@app.event("app_mention")
+def handle_mention(event: Dict[str, Any], body: Dict[str, Any], say: Any) -> None:
+    """Respond to @mentions with hello or help, based on message text.
 
     Args:
-        message: Slack message event payload.
+        event: Slack app_mention event payload.
+        body: Full request body (used for event ID deduplication).
         say: Bolt helper for posting to the same channel.
     """
-    if not _is_allowed_channel(message["channel"]):
-        return
-    user = message.get("user", "")
-    say(f"Hi <@{user}>!")
+    event_id = body.get("event_id")
+    if event_id:
+        if event_id in _handled_event_ids:
+            return
+        _handled_event_ids.add(event_id)
 
+    logging.info(f"app_mention received: {event}")
+    text: str = event.get("text", "").lower()
+    user: str = event.get("user", "")
 
-@app.message(re.compile(r"\bhelp\b", re.IGNORECASE))
-def handle_help(message: Dict[str, Any], say: Any) -> None:
-    """Respond to a help request with a command reference.
+    if "hello" in text:
+        say(f"Hi <@{user}>!")
+    elif "help" in text:
+        say(text="""Welcome to ReformedBot — where all your dreams come true.
 
-    Args:
-        message: Slack message event payload.
-        say: Bolt helper for posting to the same channel.
-    """
-    if not _is_allowed_channel(message["channel"]):
-        return
-    say("""Welcome to ReformedBot — where all your dreams come true.
-
-Commands (mention me + keyword):
+Commands (mention me with):
   *hello* — I'll say hi back
   *help* — You're looking at it
-  *report* / *queue* / *-r* — List new items in the mod queue
-  *report full* — List all mod queue items (including already-posted)
-  *mail* / *conv* / *modmail* — List new modmail conversations
 
-Interactive buttons appear on each posted item:
+Interactive dropdowns appear on each posted item:
+  *Vote* — Cast a non-binding discussion vote
   *Approve* — Approve the post on Reddit
   *Remove* — Remove with a reason (sent to user)
   *Warn User* — Send a modmail warning
-  *Ban User* — Ban with reason and optional duration""")
-
-
-@app.message(REPORT_PATTERN)
-def handle_report(message: Dict[str, Any], say: Any, client: Any) -> None:
-    """Fetch and post current modqueue items to the requesting channel.
-
-    Responds with Block Kit messages, each containing inline moderation
-    buttons. If the message text includes ``'full'``, already-posted items
-    are included; otherwise only new items are shown.
-
-    Args:
-        message: Slack message event payload.
-        say: Bolt helper for posting to the same channel.
-        client: Slack ``WebClient`` for sending Block Kit messages.
-    """
-    channel_id: str = message["channel"]
-    if not _is_allowed_channel(channel_id):
-        return
-    text: str = message.get("text", "").lower()
-    no_repost: bool = "full" not in text
-    try:
-        total, blocks = reddit.get_modqueue(channel_id, no_repost=no_repost, as_blocks=True)
-        if not blocks:
-            say(
-                random.choice(EMPTY_QUEUE_MESSAGES) if total == 0
-                else f"Total in the queue: {total}. Run 'report full' to see which ones."
-            )
-            return
-        say(f"=== MODQUEUE — {total} total item(s) ===")
-        for block_list in blocks:
-            client.chat_postMessage(channel=channel_id, blocks=block_list, text="Mod report item")
-    except Exception as e:
-        import traceback
-        say(f"Could not grab the modqueue. Exception: {e}.\n```{traceback.format_exc()}```")
-
-
-@app.message(MAIL_PATTERN)
-def handle_mail(message: Dict[str, Any], say: Any, client: Any) -> None:
-    """Fetch and post new modmail conversations to the requesting channel.
-
-    Responds with Block Kit messages, each containing Warn / Ban buttons.
-
-    Args:
-        message: Slack message event payload.
-        say: Bolt helper for posting to the same channel.
-        client: Slack ``WebClient`` for sending Block Kit messages.
-    """
-    channel_id: str = message["channel"]
-    if not _is_allowed_channel(channel_id):
-        return
-    try:
-        blocks = reddit.get_conversations(channel_id, as_blocks=True)
-        if not blocks:
-            say(random.choice(EMPTY_MAIL_MESSAGES))
-            return
-        say("=== MODMAIL CONVERSATIONS ===")
-        for block_list in blocks:
-            client.chat_postMessage(channel=channel_id, blocks=block_list, text="Modmail message")
-    except Exception as e:
-        import traceback
-        say(f"Could not grab modmail. Exception: {e}.\n```{traceback.format_exc()}```")
+  *Ban User* — Ban with reason and optional duration""", thread_ts=event.get("ts"))
 
 
 # ---------------------------------------------------------------------------
 # Background polling thread
 # ---------------------------------------------------------------------------
+
+_SUMMARY_INTERVAL: int = 5 * 60  # seconds between queue summaries
+_last_summary_key: str = ""  # tracks last posted summary content to avoid duplicates
+
+
+def _item_id_from_blocks(blocks: List[Dict[str, Any]]) -> Optional[str]:
+    """Extract the Reddit item ID from a modqueue Block Kit message."""
+    for block in blocks:
+        bid = block.get("block_id", "")
+        if bid.startswith("vote_tally_"):
+            return bid[len("vote_tally_"):]
+    return None
+
+
+def _post_queue_summary(web_client: SlackWebClient) -> None:
+    """Post a one-line summary of items still pending in the Reddit modqueue.
+
+    Fetches the live modqueue from Reddit, looks up each item's Slack message
+    permalink from the monthly log, and posts a compact summary to
+    ``modqueue_channel``.  Skips posting if the summary content is identical
+    to the last posted summary (avoids repeating the same state).
+    """
+    global _last_summary_key
+    if not modqueue_channel:
+        return
+    try:
+        current_ids = reddit.get_current_modqueue_ids()
+
+        # Build a deduplication key from the current queue state.
+        # Use sorted IDs so order changes don't trigger a new post.
+        summary_key = ",".join(sorted(current_ids))
+
+        if summary_key == _last_summary_key:
+            return
+
+        if not current_ids:
+            text = ":white_check_mark: Mod queue is clear."
+        else:
+            channel_data = reddit.get_modqueue_file().get(modqueue_channel, {})
+            parts: List[str] = []
+            current_ids = sorted(current_ids, key=lambda iid: channel_data.get(iid, {}).get("queue_num") or 0)
+            for item_id in current_ids:
+                item_data = channel_data.get(item_id, {})
+                queue_num = item_data.get("queue_num", "?")
+                slack_link = item_data.get("slack_permalink")
+                if slack_link:
+                    label = f"<{slack_link}|#{queue_num}>"
+                else:
+                    label = f"#{queue_num}"
+                parts.append(label)
+            text = f":clock2: *{len(current_ids)} item(s) still pending:* {' | '.join(parts)}"
+
+        web_client.chat_postMessage(channel=modqueue_channel, text=text)
+        _last_summary_key = summary_key
+    except Exception as e:
+        logging.error(f"Queue summary error: {e}")
+
 
 def _poll_loop() -> None:
     """Continuously poll Reddit and push new items to configured Slack channels.
@@ -918,17 +965,25 @@ def _poll_loop() -> None:
     """
     poll_interval: int = int(config.get('Default', 'POLL_INTERVAL', fallback='60'))
     web_client: SlackWebClient = SlackWebClient(token=slack_token)
+    last_summary: float = 0.0
 
     while True:
         try:
             if modqueue_channel:
                 total, blocks = reddit.get_modqueue(modqueue_channel, no_repost=True, as_blocks=True)
                 for block_list in blocks:
-                    web_client.chat_postMessage(
+                    resp = web_client.chat_postMessage(
                         channel=modqueue_channel,
                         blocks=block_list,
                         text="New mod report"
                     )
+                    item_id = _item_id_from_blocks(block_list)
+                    if item_id:
+                        try:
+                            permalink = web_client.chat_getPermalink(channel=modqueue_channel, message_ts=resp["ts"])["permalink"]
+                        except Exception:
+                            permalink = None
+                        reddit.set_item_slack_ts(modqueue_channel, item_id, resp["ts"], permalink=permalink)
                     logging.info(f"Posted modqueue item to {modqueue_channel}")
         except Exception as e:
             logging.error(f"Poller error (modqueue): {e}")
@@ -945,6 +1000,11 @@ def _poll_loop() -> None:
                     logging.info(f"Posted modmail item to {modmail_channel}")
         except Exception as e:
             logging.error(f"Poller error (modmail): {e}")
+
+        now = time.time()
+        if now - last_summary >= _SUMMARY_INTERVAL:
+            _post_queue_summary(web_client)
+            last_summary = now
 
         time.sleep(poll_interval)
 

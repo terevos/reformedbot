@@ -12,13 +12,17 @@ settings:
   socket_mode_enabled: true
   interactivity:
     is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - app_mention        # @ReformedBot mentions
   org_deploy_enabled: false
   token_rotation_enabled: false
 oauth_config:
   scopes:
     bot:
       - chat:write          # Post messages
-      - channels:history    # Read messages in public channels (to listen for commands)
+      - app_mentions:read   # Receive @mention events
+      - channels:history    # Read messages in public channels
       - groups:history      # Read messages in private channels
       - im:history          # Read DMs
       - mpim:history        # Read group DMs
