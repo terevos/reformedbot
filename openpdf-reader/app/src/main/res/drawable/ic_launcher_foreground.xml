@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple PDF document icon used as the adaptive-icon foreground -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Page body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,20 L70,20 L78,28 L78,88 L30,88 Z" />
+
+    <!-- Folded corner -->
+    <path
+        android:fillColor="#CCCCCC"
+        android:pathData="M70,20 L70,28 L78,28 Z" />
+
+    <!-- PDF text lines -->
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M38,42 L70,42 Q72,42 72,44 L72,46 Q72,48 70,48 L38,48 Q36,48 36,46 L36,44 Q36,42 38,42 Z" />
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M38,54 L64,54 Q66,54 66,56 L66,58 Q66,60 64,60 L38,60 Q36,60 36,58 L36,56 Q36,54 38,54 Z" />
+    <path
+        android:fillColor="#6750A4"
+        android:pathData="M38,66 L56,66 Q58,66 58,68 L58,70 Q58,72 56,72 L38,72 Q36,72 36,70 L36,68 Q36,66 38,66 Z" />
+
+</vector>
