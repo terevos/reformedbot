@@ -1,0 +1,30 @@
+display_information:
+  name: ReformedBot
+  description: Moderation bot for r/reformed — posts mod queue and modmail to Slack with inline action buttons.
+  background_color: "#2c2d30"
+
+features:
+  bot_user:
+    display_name: ReformedBot
+    always_online: true
+
+settings:
+  socket_mode_enabled: true
+  interactivity:
+    is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - app_mention        # @ReformedBot mentions
+  org_deploy_enabled: false
+  token_rotation_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write          # Post messages
+      - app_mentions:read   # Receive @mention events
+      - channels:history    # Read messages in public channels
+      - groups:history      # Read messages in private channels
+      - im:history          # Read DMs
+      - mpim:history        # Read group DMs
+      - channels:read       # Look up channel info
+      - groups:read         # Look up private channel info

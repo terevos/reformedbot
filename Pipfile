@@ -1,12 +1,14 @@
 [[source]]
-name = "pypi"
 url = "https://pypi.org/simple"
 verify_ssl = true
-
-[dev-packages]
+name = "pypi"
 
 [packages]
 praw = "*"
+slack-bolt = "*"
+
+[dev-packages]
 
 [requires]
-python_version = "3.7"
+python_version = "3.13"
+python_full_version = "3.13.12"

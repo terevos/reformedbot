@@ -1,0 +1,27 @@
+[Default]
+# Bot OAuth token (xoxb-...)
+API_TOKEN = xoxb-your-bot-token-here
+
+# App-level token for Socket Mode (xapp-...)
+APP_TOKEN = xapp-your-app-level-token-here
+
+# Signing secret from your Slack app settings
+SIGNING_SECRET = your-signing-secret-here
+
+# How often (seconds) to poll Reddit for new items (default: 30)
+POLL_INTERVAL = 30
+
+[Channels]
+# Channel name (e.g. mod_actions) or ID (e.g. C0ARRHHT8M7) where reports and
+# mail are posted automatically. Names are resolved to IDs at startup; for a
+# private channel the bot must first be invited to it.
+# Leave blank to disable auto-posting for that category
+MODQUEUE_CHANNEL = modbot-reports
+MODMAIL_CHANNEL  = modbot-mail
+
+[Mods]
+# Map Slack user IDs to Reddit usernames.
+# Only users listed here can click Approve / Remove / Warn / Ban buttons.
+# Format: SLACK_USER_ID = reddit_username  (Slack IDs are uppercase: U...)
+U0123456789 = terevos2
+UABCDEFGHIJ = bishopofreddit

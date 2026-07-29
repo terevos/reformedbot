@@ -65,9 +65,9 @@ config = configparser.ConfigParser()
 config.read('slack.ini')
 
 parser = argparse.ArgumentParser(description='Do the mod stuff!!')
-parser.add_argument('-s', '--subreddit', type=str, default='reformed', help='What subreddit to run this on. Default: reformed')
+parser.add_argument('-s', '--subreddit', type=str, default='reformedtesting', help='What subreddit to run this on. Default: reformedtesting')
 parser.add_argument('-d', '--debug', action='store_true')
-parser.add_argument('-c', '--channel', type=str, default='mod_zbotting', help='What Slack channel to post to')
+parser.add_argument('-c', '--channel', type=str, default='modbot-reports', help='What Slack channel to post to')
 parser.add_argument('-n', '--no_repost', type=bool, default=True, help="Don't repost queue items that were already posted to slack")
 parser.add_argument('command', type=str, default='report', help='What to do')
 
