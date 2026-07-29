@@ -37,7 +37,7 @@ Two config files are required before running:
 python reformed_listener.py
 ```
 
-The bot connects via Slack Socket Mode (no public HTTP server needed). It starts a background polling thread that polls Reddit every `POLL_INTERVAL` seconds (default 60).
+The bot connects via Slack Socket Mode (no public HTTP server needed). It starts a background polling thread that polls Reddit every `POLL_INTERVAL` seconds (default 30).
 
 `reformed_test.py` is a legacy CLI script using the deprecated RTM Slack library — it is not the current bot and is not actively maintained.
 
@@ -81,7 +81,9 @@ Remove/Warn/Ban open Slack modals to collect input. Context (item ID, channel, m
 | `[Default]` | `API_TOKEN` | Bot OAuth token (`xoxb-...`) |
 | `[Default]` | `APP_TOKEN` | Socket Mode app-level token (`xapp-...`) |
 | `[Default]` | `SIGNING_SECRET` | Slack signing secret |
-| `[Default]` | `POLL_INTERVAL` | Seconds between Reddit polls (default 60) |
-| `[Channels]` | `MODQUEUE_CHANNEL` | Channel ID for auto-pushed mod reports |
-| `[Channels]` | `MODMAIL_CHANNEL` | Channel ID for auto-pushed modmail |
+| `[Default]` | `POLL_INTERVAL` | Seconds between Reddit polls (default 30) |
+| `[Channels]` | `MODQUEUE_CHANNEL` | Channel name or ID for auto-pushed mod reports |
+| `[Channels]` | `MODMAIL_CHANNEL` | Channel name or ID for auto-pushed modmail |
+
+Channel values may be a name (`mod_actions`) or an ID (`C0ARRHHT8M7`). Names are resolved to IDs at startup by `_resolve_channel()` in `reformed_listener.py`; a private channel is only resolvable once the bot has been invited to it. Note that the deduplication log is keyed by channel ID, so pointing a feed at a different channel re-posts currently-open items there.
 | `[Mods]` | `SLACK_USER_ID = reddit_name` | Authorized moderators |
