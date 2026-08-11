@@ -51,6 +51,23 @@ class RedditActions:
             label = chr(ord('A') + rem) + label
         return label
 
+    # ------------------------------------------------------------------
+    # Slack done-state
+    #
+    # Modqueue items and modmail conversations share one encoding: ``done_at``
+    # holds the unix timestamp the entry was marked done in Slack, and is
+    # absent (or ``None``) while it is still open. Older logs used
+    # ``slack_done_at`` for items and ``status: 'open'|'done'`` for
+    # conversations; ``migrate_done_state`` rewrites those in place at startup.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def is_done(entry: Optional[Dict[str, Any]]) -> bool:
+        """Return True if a log *entry* is currently marked done in Slack."""
+        if not entry:
+            return False
+        return entry.get("done_at") is not None
+
     @classmethod
     def is_mod(cls, username: str) -> bool:
         """Return True if *username* is a subreddit moderator.
@@ -74,18 +91,24 @@ class RedditActions:
         "question":         "dont_understand",
     }
 
-    def __init__(self, subreddit: str, no_repost: bool = False) -> None:
+    def __init__(self, subreddit: str, no_repost: bool = False, reddit: Optional[Any] = None, log_dir: str = "logs") -> None:
         """Initialise the Reddit connection and subreddit handle.
 
         Args:
             subreddit: Name of the subreddit to moderate (e.g. ``'reformed'``).
             no_repost: When ``True``, ``get_modqueue`` skips items already
                 posted to Slack by default. Can be overridden per-call.
+            reddit: Pre-built PRAW ``Reddit`` instance. Defaults to building one
+                from the ``reformedbot`` profile in ``praw.ini``; tests inject a
+                fake so no network or credentials are needed.
+            log_dir: Directory holding the JSON logs. Tests point this at a
+                temporary directory to keep the real ``logs/`` untouched.
         """
-        self._reddit = praw.Reddit('reformedbot', user_agent='reformedbot user agent')
+        self._reddit = reddit if reddit is not None else praw.Reddit('reformedbot', user_agent='reformedbot user agent')
         self.sub = self._reddit.subreddit(subreddit)
         self.posted_to_slack: Dict[str, Any] = {}
         self.no_repost: bool = no_repost
+        self.log_dir: str = log_dir
 
     # ------------------------------------------------------------------
     # Block Kit builders
@@ -593,7 +616,7 @@ class RedditActions:
                     "thread_ts":      thread_ts,   # None for brand-new convs; poller fills it in
                     "blocks":         blocks,
                     "is_user_message": is_user_msg,
-                    "was_done":       (known.get("status") == "done") if known else False,
+                    "was_done":       self.is_done(known),
                     "text":           fallback_text,
                 })
                 plain_texts.append(fallback_text)
@@ -605,11 +628,12 @@ class RedditActions:
                         new_data[conv_id]["conv_num"] = conv_num
                         new_data[conv_id]["subject"] = mod_conv.subject
                         new_data[conv_id]["author"] = author
-                        new_data[conv_id]["status"] = "open"
+                        new_data[conv_id]["done_at"] = None
                         next_conv_num += 1
                 new_data[conv_id]["messages"][msg_id] = True
                 if is_user_msg:
-                    new_data[conv_id]["status"] = "open"
+                    # A new message from the user re-opens a done conversation.
+                    new_data[conv_id]["done_at"] = None
 
                 first_in_batch = False
 
@@ -626,9 +650,12 @@ class RedditActions:
                 # conv_num must persist: it is rendered into the posted Slack
                 # message, and the summary reads it back from here. Dropping it
                 # let _backfill_conv_nums reassign a different number later.
-                for key in ("conv_num", "subject", "author", "status"):
+                for key in ("conv_num", "subject", "author", "done_at"):
                     if key in updates:
-                        entry[key] = updates[key]
+                        if key == "done_at" and updates[key] is None:
+                            entry.pop("done_at", None)  # open is encoded as absent
+                        else:
+                            entry[key] = updates[key]
             self.write_modmail_file(fresh)
 
         if as_blocks:
@@ -651,17 +678,24 @@ class RedditActions:
             entry["slack_permalink"] = permalink
         self.write_modmail_file(data)
 
-    def set_conv_status(self, channel: str, conv_id: str, status: str) -> None:
-        """Set the open/done status of a modmail conversation.
+    def set_conv_done_at(self, channel: str, conv_id: str, done_at: Optional[float]) -> None:
+        """Set or clear the Slack-done timestamp for a modmail conversation.
+
+        Mirrors ``set_item_done_at`` — both sides of the bot record done-state
+        the same way. See the note on the class for the encoding.
 
         Args:
             channel: Slack channel ID.
             conv_id: Reddit modmail conversation ID.
-            status: ``'open'`` or ``'done'``.
+            done_at: Unix timestamp when the conversation was marked done, or
+                ``None`` to clear (re-opened).
         """
         data = self.get_modmail_file()
         entry = data.setdefault(channel, {}).setdefault('modmail_conv', {}).setdefault(conv_id, {})
-        entry["status"] = status
+        if done_at is None:
+            entry.pop("done_at", None)
+        else:
+            entry["done_at"] = done_at
         self.write_modmail_file(data)
 
     def _backfill_conv_nums(self, channel: str, conv_log: Optional[Dict[str, Any]] = None) -> None:
@@ -722,7 +756,7 @@ class RedditActions:
         self._backfill_conv_nums(channel, conv_log)
         open_convs: List[Dict[str, Any]] = []
         for conv_id, cdata in conv_log.items():
-            if cdata.get("status") == "open":
+            if not self.is_done(cdata):
                 open_convs.append({
                     "conv_id":        conv_id,
                     "conv_num":       cdata.get("conv_num"),
@@ -782,25 +816,6 @@ class RedditActions:
         self.write_modqueue_file(data)
         logging.info(f"record_vote: wrote file, votes for {item_id}={data[channel][item_id]['votes']}")
 
-    def remove_vote(self, channel: str, item_id: str, user_id: str, vote_key: str) -> None:
-        """Remove a specific vote key for a user, ignoring it if not present.
-
-        Args:
-            channel: Slack channel ID.
-            item_id: Reddit item ID (bare).
-            user_id: Slack user ID of the voting moderator.
-            vote_key: The vote key to remove.
-        """
-        data = self.get_modqueue_file()
-        current = data.get(channel, {}).get(item_id, {}).get("votes", {}).get(user_id, [])
-        if isinstance(current, str):
-            current = [current]
-        if vote_key not in current:
-            return
-        current.remove(vote_key)
-        data[channel][item_id]["votes"][user_id] = current
-        self.write_modqueue_file(data)
-
     def set_item_slack_ts(self, channel: str, item_id: str, slack_ts: str, permalink: Optional[str] = None, blocks: Optional[List[Dict[str, Any]]] = None) -> None:
         """Store the Slack message timestamp, permalink, and blocks for a posted modqueue item.
 
@@ -832,9 +847,9 @@ class RedditActions:
         data = self.get_modqueue_file()
         if channel in data and item_id in data[channel]:
             if done_at is None:
-                data[channel][item_id].pop("slack_done_at", None)
+                data[channel][item_id].pop("done_at", None)
             else:
-                data[channel][item_id]["slack_done_at"] = done_at
+                data[channel][item_id]["done_at"] = done_at
             self.write_modqueue_file(data)
 
     def get_current_modqueue_ids(self) -> List[str]:
@@ -1281,26 +1296,31 @@ class RedditActions:
 
             newly_archived: List[Dict[str, Any]] = []
             newly_unarchived: List[Dict[str, Any]] = []
-            status_updates: Dict[str, str] = {}
+            done_updates: Dict[str, Optional[float]] = {}
+            now = time.time()
 
             for conv_id, entry in conv_log.items():
                 if not entry.get('slack_ts'):
                     continue
-                status = entry.get('status')
+                done = self.is_done(entry)
                 info = {'conv_id': conv_id, 'author': entry.get('author', ''), 'slack_ts': entry['slack_ts']}
 
-                if status == 'open' and conv_id in archived_ids:
+                if not done and conv_id in archived_ids:
                     newly_archived.append({**info, 'by': archived_by.get(conv_id, '')})
-                    status_updates[conv_id] = 'done'
-                elif status == 'done' and conv_id in active_ids:
+                    done_updates[conv_id] = now
+                elif done and conv_id in active_ids:
                     newly_unarchived.append({**info, 'by': unarchived_by.get(conv_id, '')})
-                    status_updates[conv_id] = 'open'
+                    done_updates[conv_id] = None
 
-            if status_updates:
+            if done_updates:
                 fresh = self.get_modmail_file()
                 conv_log_fresh = fresh.setdefault(channel, {}).setdefault('modmail_conv', {})
-                for conv_id, status in status_updates.items():
-                    conv_log_fresh.setdefault(conv_id, {})['status'] = status
+                for conv_id, done_at in done_updates.items():
+                    entry_fresh = conv_log_fresh.setdefault(conv_id, {})
+                    if done_at is None:
+                        entry_fresh.pop('done_at', None)
+                    else:
+                        entry_fresh['done_at'] = done_at
                 self.write_modmail_file(fresh)
 
             return {'archived': newly_archived, 'unarchived': newly_unarchived}
@@ -1376,12 +1396,31 @@ class RedditActions:
     # Persistence helpers
     # ------------------------------------------------------------------
 
-    _QUEUE_LOG_PATH: str = "logs/modqueue.json"
-    _MAIL_LOG_PATH: str = "logs/modmail.json"
+    # File names only — the directory comes from ``self.log_dir`` so tests can
+    # redirect the logs without changing the process working directory.
+    _QUEUE_LOG_NAME: str = "modqueue.json"
+    _MAIL_LOG_NAME: str = "modmail.json"
+
+    @property
+    def _queue_log_path(self) -> str:
+        """Full path to the modqueue log inside ``self.log_dir``."""
+        return os.path.join(self.log_dir, self._QUEUE_LOG_NAME)
+
+    @property
+    def _mail_log_path(self) -> str:
+        """Full path to the modmail log inside ``self.log_dir``."""
+        return os.path.join(self.log_dir, self._MAIL_LOG_NAME)
 
     def _read_log(self, path: str) -> Dict[str, Any]:
-        if not os.path.exists('logs'):
-            os.makedirs('logs')
+        """Load a JSON log, creating the directory and an empty file if needed.
+
+        Args:
+            path: Full path to the log file.
+
+        Returns:
+            The decoded log, or an empty dict for a newly created file.
+        """
+        os.makedirs(self.log_dir, exist_ok=True)
         if not os.path.exists(path):
             with open(path, 'w') as f:
                 f.write("{}")
@@ -1389,6 +1428,17 @@ class RedditActions:
             return json.load(f)
 
     def _write_log(self, path: str, jdata: Dict[str, Any]) -> None:
+        """Persist a JSON log atomically.
+
+        Writes to a temporary file and renames it over the target, so a reader
+        never observes a partially written log.
+
+        Args:
+            path: Full path to the log file.
+            jdata: Log contents to serialise.
+        """
+        # Not just _read_log's job: a write can land first on a fresh install.
+        os.makedirs(self.log_dir, exist_ok=True)
         formatted_json = json.dumps(jdata, indent=4, sort_keys=True)
         tmp_path = path + ".tmp"
         with open(tmp_path, 'w') as outfile:
@@ -1397,16 +1447,61 @@ class RedditActions:
 
     def get_modqueue_file(self) -> Dict[str, Any]:
         """Load the modqueue (reports) deduplication log from disk."""
-        return self._read_log(self._QUEUE_LOG_PATH)
+        return self._read_log(self._queue_log_path)
 
     def write_modqueue_file(self, jdata: Dict[str, Any]) -> None:
         """Persist the modqueue (reports) deduplication log to disk."""
-        self._write_log(self._QUEUE_LOG_PATH, jdata)
+        self._write_log(self._queue_log_path, jdata)
+
+    def migrate_done_state(self) -> Dict[str, int]:
+        """Rewrite legacy done-state fields in both logs to the ``done_at`` encoding.
+
+        Converts modqueue ``slack_done_at`` (same meaning, old name) and modmail
+        ``status: 'open'|'done'`` (no timestamp, so done entries are stamped with
+        the migration time). Safe to run on every startup: once converted there
+        is nothing left to change and neither file is rewritten.
+
+        Returns:
+            Counts of converted entries, ``{'items': n, 'convs': n}``.
+        """
+        now = time.time()
+        counts = {'items': 0, 'convs': 0}
+
+        data = self.get_modqueue_file()
+        for channel_data in data.values():
+            if not isinstance(channel_data, dict):
+                continue
+            for entry in channel_data.values():
+                if isinstance(entry, dict) and 'slack_done_at' in entry:
+                    legacy = entry.pop('slack_done_at')
+                    if legacy is not None:
+                        entry['done_at'] = legacy
+                    counts['items'] += 1
+        if counts['items']:
+            self.write_modqueue_file(data)
+
+        mail = self.get_modmail_file()
+        for channel_data in mail.values():
+            if not isinstance(channel_data, dict):
+                continue
+            for entry in channel_data.get('modmail_conv', {}).values():
+                if isinstance(entry, dict) and 'status' in entry:
+                    # No timestamp exists for legacy done conversations; stamp
+                    # them now so ordering stays sane, and drop the old field.
+                    if entry.pop('status') == 'done':
+                        entry['done_at'] = now
+                    counts['convs'] += 1
+        if counts['convs']:
+            self.write_modmail_file(mail)
+
+        if counts['items'] or counts['convs']:
+            logging.info(f"Migrated done-state: {counts['items']} item(s), {counts['convs']} conversation(s)")
+        return counts
 
     def get_modmail_file(self) -> Dict[str, Any]:
         """Load the modmail deduplication log from disk."""
-        return self._read_log(self._MAIL_LOG_PATH)
+        return self._read_log(self._mail_log_path)
 
     def write_modmail_file(self, jdata: Dict[str, Any]) -> None:
         """Persist the modmail deduplication log to disk."""
-        self._write_log(self._MAIL_LOG_PATH, jdata)
+        self._write_log(self._mail_log_path, jdata)

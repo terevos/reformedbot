@@ -40,12 +40,19 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+#
+# Importing this module must stay side-effect-free: no network calls, no
+# Reddit session, no reliance on slack.ini being present. Everything that
+# talks to the outside world happens in ``_startup()``, which ``__main__``
+# calls. That lets the test suite import the module and exercise its
+# functions without credentials or a live Slack.
+#
 config = configparser.ConfigParser()
 config.read('slack.ini')
 
-slack_token: str = config['Default']['API_TOKEN']
-app_token: str = config['Default']['APP_TOKEN']
-signing_secret: str = config['Default']['SIGNING_SECRET']
+slack_token: str = config.get('Default', 'API_TOKEN', fallback='')
+app_token: str = config.get('Default', 'APP_TOKEN', fallback='')
+signing_secret: str = config.get('Default', 'SIGNING_SECRET', fallback='')
 
 
 def _resolve_channel(value: Optional[str], token: str) -> Optional[str]:
@@ -86,9 +93,65 @@ def _resolve_channel(value: Optional[str], token: str) -> Optional[str]:
     return None
 
 
-modqueue_channel: Optional[str] = _resolve_channel(config.get('Channels', 'MODQUEUE_CHANNEL', fallback=None), slack_token)
-modmail_channel: Optional[str] = _resolve_channel(config.get('Channels', 'MODMAIL_CHANNEL', fallback=None), slack_token)
-logging.info(f"Channels resolved: modqueue={modqueue_channel} modmail={modmail_channel}")
+# Raw [Channels] values, kept so a channel that could not be resolved at
+# startup (Slack unreachable, bot not yet invited) can be retried by the poll
+# loop instead of staying disabled until the bot is restarted.
+_raw_modqueue_channel: Optional[str] = config.get('Channels', 'MODQUEUE_CHANNEL', fallback=None)
+_raw_modmail_channel: Optional[str] = config.get('Channels', 'MODMAIL_CHANNEL', fallback=None)
+
+# Resolved channel IDs. Left unresolved at import (resolution is a network
+# call); ``_startup()`` fills them in and the poll loop retries any that fail.
+modqueue_channel: Optional[str] = None
+modmail_channel: Optional[str] = None
+
+_resolve_attempts: int = 0  # counts retry passes, to keep the failure log from repeating every poll
+
+
+def _is_configured(raw: Optional[str]) -> bool:
+    """Return True if a channel was given a non-empty value in ``slack.ini``."""
+    return bool((raw or "").strip())
+
+
+def _pending_channels() -> List[str]:
+    """Return the names of channels configured in slack.ini but not yet resolved.
+
+    A non-empty result means the bot could not reach Slack (or has not been
+    invited to a private channel) and does not yet know its own channel IDs.
+    """
+    pending: List[str] = []
+    if _is_configured(_raw_modqueue_channel) and not modqueue_channel:
+        pending.append("MODQUEUE_CHANNEL")
+    if _is_configured(_raw_modmail_channel) and not modmail_channel:
+        pending.append("MODMAIL_CHANNEL")
+    return pending
+
+
+def _retry_unresolved_channels() -> None:
+    """Re-attempt resolution for any configured channel still missing its ID.
+
+    Called once per poll so a bot started while Slack was unreachable starts
+    working on its own once Slack comes back, with no restart. Resolution is
+    skipped entirely when nothing is pending, so the normal path costs nothing.
+    """
+    global modqueue_channel, modmail_channel, _resolve_attempts
+    pending = _pending_channels()
+    if not pending:
+        return
+
+    _resolve_attempts += 1
+    if _is_configured(_raw_modqueue_channel) and not modqueue_channel:
+        modqueue_channel = _resolve_channel(_raw_modqueue_channel, slack_token)
+    if _is_configured(_raw_modmail_channel) and not modmail_channel:
+        modmail_channel = _resolve_channel(_raw_modmail_channel, slack_token)
+
+    resolved = [name for name in pending if name not in _pending_channels()]
+    if resolved:
+        logging.info(f"Channels resolved on retry: {', '.join(resolved)} (modqueue={modqueue_channel} modmail={modmail_channel})")
+    still_pending = _pending_channels()
+    # _resolve_channel already logs each failure; repeat the summary sparingly
+    # so a long outage does not fill the log at one line per poll.
+    if still_pending and _resolve_attempts % 20 == 1:
+        logging.warning(f"Still unresolved after {_resolve_attempts} attempt(s): {', '.join(still_pending)}")
 
 # Slack user ID → Reddit username mapping (from [Mods] section of slack.ini)
 mod_slack_ids: Dict[str, str] = {}
@@ -96,16 +159,66 @@ if config.has_section('Mods'):
     for slack_uid, reddit_name in config.items('Mods'):
         mod_slack_ids[slack_uid.upper()] = reddit_name
 
-reddit: RedditActions = RedditActions('reformed')
+# Reddit session. Built by ``_startup()`` so importing this module neither
+# reads praw.ini nor opens a session; tests assign a fake here instead.
+reddit: RedditActions = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Slack Bolt app
 # ---------------------------------------------------------------------------
-app: App = App(token=slack_token, signing_secret=signing_secret)
+# token_verification_enabled=False: Bolt otherwise calls auth.test while
+# constructing the App, which would make importing this module hit the network.
+# The token is still verified for real when SocketModeHandler connects.
+#
+# The placeholders keep the import working when slack.ini is absent (tests) —
+# Bolt refuses to build an App without a token. ``_startup()`` is what refuses
+# to actually run the bot with an unconfigured token.
+app: App = App(
+    token=slack_token or "xoxb-not-configured",
+    signing_secret=signing_secret or "not-configured",
+    token_verification_enabled=False,
+)
+
+
+def _startup() -> None:
+    """Perform the side-effecting initialisation the bot needs to run.
+
+    Separated from import so the module can be imported by tests without
+    credentials or network access. Resolves channel names to IDs, opens the
+    Reddit session, and migrates any legacy done-state in the logs.
+    """
+    global reddit, modqueue_channel, modmail_channel
+
+    missing = [k for k, v in (("API_TOKEN", slack_token), ("APP_TOKEN", app_token)) if not v]
+    if missing:
+        raise SystemExit(f"slack.ini is missing required key(s): {', '.join(missing)}")
+
+    reddit = RedditActions('reformed')
+    reddit.migrate_done_state()
+
+    modqueue_channel = _resolve_channel(_raw_modqueue_channel, slack_token)
+    modmail_channel = _resolve_channel(_raw_modmail_channel, slack_token)
+    logging.info(f"Channels resolved: modqueue={modqueue_channel} modmail={modmail_channel}")
 
 
 def _is_allowed_channel(channel_id: str) -> bool:
-    """Return True if *channel_id* is one of the configured mod channels."""
+    """Return True if *channel_id* is one of the configured mod channels.
+
+    Guards against interactions arriving from a message that outlived its
+    channel's configuration — a feed repointed at a different channel leaves
+    the old messages in place with working buttons, and clicking one would
+    otherwise take a real Reddit action and write to the log under a stale key.
+
+    Fails open in two cases:
+
+    - No channels configured at all: the bot is not acting as a feed, so there
+      is nothing to restrict.
+    - A configured channel is not yet resolved: the allow-list is not known
+      to be complete, and refusing here would disable buttons on messages
+      posted before the outage. See ``_retry_unresolved_channels``.
+    """
+    if _pending_channels():
+        return True
     allowed = {c for c in (modqueue_channel, modmail_channel) if c}
     return not allowed or channel_id in allowed
 
@@ -121,6 +234,30 @@ def is_authorized_mod(slack_user_id: str) -> bool:
     """
     logging.info(f"AUTH CHECK: user={slack_user_id.upper()!r}, mod_slack_ids keys={list(mod_slack_ids.keys())}")
     return slack_user_id.upper() in mod_slack_ids
+
+
+def _interaction_allowed(client: Any, channel: str, user_id: str, verb: str = "take moderation actions") -> bool:
+    """Return True if *user_id* may act on an interaction from *channel*.
+
+    Checks both gates every interactive handler needs: the message must live in
+    a configured mod channel, and the clicker must be a listed moderator. The
+    rejection is reported ephemerally, so only the clicker sees it.
+
+    Args:
+        client: Slack WebClient.
+        channel: Channel the interaction arrived from.
+        user_id: Slack user ID of the clicker.
+        verb: Phrase completing "You are not authorized to ..." in the notice.
+    """
+    if not _is_allowed_channel(channel):
+        logging.warning(f"Rejected interaction from unconfigured channel {channel} by {user_id}")
+        client.chat_postEphemeral(channel=channel, user=user_id, text="This channel is not a configured mod feed — action ignored.")
+        return False
+    if not is_authorized_mod(user_id):
+        logging.warning(f"Unauthorized interaction from {user_id} in {channel}")
+        client.chat_postEphemeral(channel=channel, user=user_id, text=f"You are not authorized to {verb}.")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -722,31 +859,6 @@ def _mark_conv_as_reopened(client: Any, channel: str, conv_ts: str) -> None:
         logging.warning(f"Could not mark conv as reopened: {e}")
 
 
-def _replace_buttons_with_status(client: Any, body: Dict[str, Any], status_text: str) -> None:
-    """Update a Slack message in-place, replacing action buttons with a status line.
-
-    This prevents double-actions by removing the buttons after a moderation
-    action has been taken and showing a confirmation instead.
-
-    Args:
-        client: Slack ``WebClient`` instance (injected by Bolt).
-        body: The full Slack action payload dict.
-        status_text: Mrkdwn-formatted confirmation text to display.
-    """
-    try:
-        channel: str = body["container"]["channel_id"]
-        ts: str = body["container"]["message_ts"]
-        original_blocks: List[Dict[str, Any]] = body["message"].get("blocks", [])
-        new_blocks = [b for b in original_blocks if b.get("type") != "actions"]
-        new_blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": status_text}
-        })
-        client.chat_update(channel=channel, ts=ts, blocks=new_blocks, text=status_text)
-    except Exception as e:
-        logging.warning(f"Could not update message: {e}")
-
-
 # ---------------------------------------------------------------------------
 # Action dropdown handler
 # ---------------------------------------------------------------------------
@@ -757,8 +869,7 @@ def handle_mark_done(ack: Any, body: Dict[str, Any], client: Any) -> None:
     ack()
     user_id: str = body["user"]["id"]
     channel: str = body["container"]["channel_id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
+    if not _interaction_allowed(client, channel, user_id):
         return
 
     value: str = body["actions"][0]["value"]
@@ -783,7 +894,7 @@ def handle_mark_done(ack: Any, body: Dict[str, Any], client: Any) -> None:
         conv_id = item_id
         _mark_conv_as_actioned(client, channel, conv_id, f"✅ DONE — {mod_reddit}")
         client.chat_postMessage(channel=channel, thread_ts=ts, text=f":white_check_mark: Marked done by {mod_reddit}")
-        reddit.set_conv_status(channel, conv_id, "done")
+        reddit.set_conv_done_at(channel, conv_id, time.time())
 
 
 @app.action("modqueue_action")
@@ -1067,8 +1178,7 @@ def handle_modmail_action(ack: Any, body: Dict[str, Any], client: Any) -> None:
     ack()
     user_id: str = body["user"]["id"]
     channel: str = body["container"]["channel_id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
+    if not _interaction_allowed(client, channel, user_id):
         return
 
     value: str = body["actions"][0]["selected_option"]["value"]
@@ -1116,7 +1226,7 @@ def handle_reply_submitted(ack: Any, body: Dict[str, Any], client: Any) -> None:
         if channel and ts:
             client.chat_postMessage(channel=channel, thread_ts=ts, text=reply_text)
         _mark_conv_as_actioned(client, channel, conv_id, f"💬 REPLIED — {mod_reddit}")
-        reddit.set_conv_status(channel, conv_id, "done")
+        reddit.set_conv_done_at(channel, conv_id, time.time())
     except Exception as e:
         notify_channel = modmail_channel or modqueue_channel
         if notify_channel:
@@ -1151,9 +1261,8 @@ def handle_cast_vote(ack: Any, body: Dict[str, Any], client: Any) -> None:
     logging.info(f"cast_vote RECEIVED: user={reddit_name} delay={dispatch_delay}s value={value!r}")
 
     def _process() -> None:
-        if not is_authorized_mod(user_id):
-            logging.warning(f"cast_vote: unauthorized user {reddit_name} ({user_id})")
-            client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to vote.")
+        """Do the vote work off the Bolt thread, which has already acked."""
+        if not _interaction_allowed(client, channel, user_id, verb="vote"):
             return
 
         try:
@@ -1220,8 +1329,7 @@ def handle_reopen_item(ack: Any, body: Dict[str, Any], client: Any) -> None:
     ack()
     user_id: str = body["user"]["id"]
     channel: str = body["container"]["channel_id"]
-    if not is_authorized_mod(user_id):
-        client.chat_postEphemeral(channel=channel, user=user_id, text="You are not authorized to take moderation actions.")
+    if not _interaction_allowed(client, channel, user_id):
         return
 
     value: str = body["actions"][0]["selected_option"]["value"]
@@ -1249,30 +1357,33 @@ def handle_reopen_item(ack: Any, body: Dict[str, Any], client: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Text command handlers
+# Error and event handlers
 # ---------------------------------------------------------------------------
-
-UNKNOWN_MESSAGES: List[str] = [
-    "I do not know that command.",
-    "I wish I could help you, but I don't understand.",
-    "I apologize. I'm not familiar with that command",
-    "I'm sorry. I don't know what that means.",
-    "Your sin smells to high heaven."
-]
-
 
 @app.error
 def handle_error(error: Exception, body: Dict[str, Any]) -> None:
+    """Log any exception Bolt did not handle, with the payload that caused it.
+
+    Args:
+        error: The unhandled exception.
+        body: The Slack payload being processed when it was raised.
+    """
     logging.error(f"Bolt error: {error} | body: {body}")
 
 
 @app.event("message")
 def handle_message_noop() -> None:
+    """Absorb ``message`` events.
+
+    The bot has no text commands; registering a no-op stops Bolt logging an
+    "unhandled request" warning for every message in its channels.
+    """
     pass  # Absorb message events to prevent Bolt warnings
 
 
 @app.event("app_mention")
 def handle_mention_noop() -> None:
+    """Absorb ``app_mention`` events. See :func:`handle_message_noop`."""
     pass  # Absorb app_mention events to prevent Bolt warnings
 
 
@@ -1283,10 +1394,20 @@ def handle_mention_noop() -> None:
 _SUMMARY_INTERVAL: int = 5 * 60  # seconds between queue summaries
 _last_summary_key: Optional[str] = None  # tracks last posted summary; None forces next post
 
+# Each feed keeps one live status message rather than posting the same summary
+# again and again: while the state is unchanged the message is edited in place
+# on this cadence so its "Updated ..." line stays honest.
+_STATUS_REFRESH_INTERVAL: int = 10 * 60
+_queue_status_ts: Optional[str] = None       # Slack ts of the live modqueue status message
+_queue_status_refreshed_at: float = 0.0
+_modmail_status_ts: Optional[str] = None     # Slack ts of the live modmail status message
+_modmail_status_refreshed_at: float = 0.0
+
 # Scheduled digest: a summary forced out at fixed times of day even when the
-# state has not changed, so the channel gets a morning and midday status check.
+# state has not changed, so the channel gets a status check spread across the
+# working day.
 _DIGEST_TZ = ZoneInfo("America/New_York")
-_DIGEST_HOURS: Tuple[int, ...] = (6, 13)  # local hours in _DIGEST_TZ
+_DIGEST_HOURS: Tuple[int, ...] = (6, 10, 13, 17)  # local hours in _DIGEST_TZ
 _DIGEST_WINDOW: int = 15 * 60  # only fire this long after the scheduled hour
 _DIGEST_QUIET_PERIOD: int = 60 * 60  # skip the digest if the bot posted this recently
 _last_digest_slot: Optional[str] = None  # "YYYY-MM-DD:H" of the last digest decision
@@ -1318,19 +1439,76 @@ def _item_id_from_blocks(blocks: List[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _updated_line(now: Optional[float] = None) -> str:
+    """Return the "Updated ..." footer stamped on every status message.
+
+    The timestamp goes through Slack's ``<!date^...>`` token so each mod reads
+    it in their own timezone; the pipe-delimited fallback is what clients that
+    cannot render the token (and the notification text) show instead.
+    """
+    stamp = int(now if now is not None else time.time())
+    fallback = datetime.fromtimestamp(stamp, _DIGEST_TZ).strftime("%b %-d at %-I:%M %p %Z")
+    return f"_Updated <!date^{stamp}^{{date_short_pretty}} at {{time}}|{fallback}>_"
+
+
+def _is_last_message(web_client: SlackWebClient, channel: str, ts: str) -> bool:
+    """Return whether *ts* is currently the newest message in *channel*.
+
+    Fails safe: if the history lookup does not work, report ``True`` so the
+    caller edits in place rather than posting a message that may turn out to be
+    a duplicate.
+    """
+    try:
+        messages = web_client.conversations_history(channel=channel, limit=1).get("messages") or []
+        return bool(messages) and messages[0].get("ts") == ts
+    except Exception as e:
+        logging.warning(f"Could not check whether {channel}/{ts} is the latest message: {e}")
+        return True
+
+
+def _publish_status(web_client: SlackWebClient, channel: str, body: str, current_ts: Optional[str], repost: bool) -> Optional[str]:
+    """Show *body* as the channel's single live status message; return its ts.
+
+    The status message is always kept at the bottom of the channel, so it is
+    edited in place only when it is still the newest message and the summary
+    itself has not changed (the periodic timestamp refresh).  Otherwise the old
+    one is deleted and a fresh one posted, which both surfaces a changed queue
+    and stops the status from being stranded above newer reports.
+
+    An edit of a message that is no longer there — deleted by hand — falls
+    through to posting, so the feed repairs itself without a restart.
+    """
+    text = f"{body}\n{_updated_line()}"
+    if current_ts and not repost and _is_last_message(web_client, channel, current_ts):
+        try:
+            web_client.chat_update(channel=channel, ts=current_ts, text=text)
+            return current_ts
+        except Exception as e:
+            logging.warning(f"Status refresh failed for {channel}/{current_ts}, posting a new one: {e}")
+            current_ts = None  # the message is gone; nothing left to delete
+    if current_ts:
+        try:
+            web_client.chat_delete(channel=channel, ts=current_ts)
+        except Exception as e:
+            logging.warning(f"Could not delete the old status message {channel}/{current_ts}: {e}")
+    return web_client.chat_postMessage(channel=channel, text=text)["ts"]
+
+
 def _post_queue_summary(web_client: SlackWebClient, force: bool = False) -> None:
-    """Post a one-line summary of items still pending in the Reddit modqueue.
+    """Update the modqueue channel's status message with what is still pending.
 
     Fetches the live modqueue from Reddit, looks up each item's Slack message
-    permalink from the log, and posts a compact summary to ``modqueue_channel``.
-    Skips posting if the summary content is identical to the last posted summary
-    (avoids repeating the same state).
+    permalink from the log, and keeps one status message in
+    ``modqueue_channel`` rather than posting the same summary repeatedly: a
+    changed queue is reposted at the bottom of the channel, an unchanged one
+    only has its timestamp refreshed, at most once per
+    ``_STATUS_REFRESH_INTERVAL``.
 
     Args:
-        force: Post even when the state is unchanged.  Used by the scheduled
+        force: Repost even when the state is unchanged.  Used by the scheduled
             digest so a quiet channel still gets a status line.
     """
-    global _last_summary_key, _last_activity_at
+    global _last_summary_key, _last_activity_at, _queue_status_ts, _queue_status_refreshed_at
     if not modqueue_channel:
         return
     try:
@@ -1340,11 +1518,15 @@ def _post_queue_summary(web_client: SlackWebClient, force: bool = False) -> None
         # Use sorted IDs so order changes don't trigger a new post.
         summary_key = ",".join(sorted(current_ids))
 
-        if not force and _last_summary_key is not None and summary_key == _last_summary_key:
+        now = time.time()
+        unchanged = _last_summary_key is not None and summary_key == _last_summary_key
+        if unchanged and not force and (
+            not _queue_status_ts or now - _queue_status_refreshed_at < _STATUS_REFRESH_INTERVAL
+        ):
             return
 
         if not current_ids:
-            text = ":white_check_mark: Mod queue is clear."
+            body = ":white_check_mark: Mod queue is clear."
         else:
             channel_data = reddit.get_modqueue_file().get(modqueue_channel, {})
             parts: List[str] = []
@@ -1358,47 +1540,64 @@ def _post_queue_summary(web_client: SlackWebClient, force: bool = False) -> None
                 else:
                     label = f"#{queue_num}"
                 parts.append(label)
-            text = f":clock2: *{len(current_ids)} item(s) still pending:* {' | '.join(parts)}"
+            body = f":clock2: *{len(current_ids)} item(s) still pending:* {' | '.join(parts)}"
 
-        web_client.chat_postMessage(channel=modqueue_channel, text=text)
+        repost = force or not unchanged
+        _queue_status_ts = _publish_status(web_client, modqueue_channel, body, _queue_status_ts, repost=repost)
+        _queue_status_refreshed_at = now
         _last_summary_key = summary_key
-        _last_activity_at = time.time()
+        # An in-place edit is silent, so it must not count as channel activity —
+        # the digest's quiet check is about whether mods have seen something new.
+        if repost:
+            _last_activity_at = now
     except Exception as e:
         logging.error(f"Queue summary error: {e}")
 
 
-_last_modmail_summary_key: str = ""
+# None (not "") means "nothing posted yet" — an empty string is the legitimate
+# key for "no open conversations", and conflating the two suppressed the
+# all-clear notice after a restart. Matches _last_summary_key.
+_last_modmail_summary_key: Optional[str] = None
 
 
 def _post_modmail_summary(web_client: SlackWebClient, force: bool = False) -> None:
-    """Post a summary of open modmail conversations to the modmail channel.
+    """Update the modmail channel's status message with the open conversations.
 
-    Skips posting if the open conversation set is identical to the last summary.
+    Keeps one live status message, on the same terms as
+    :func:`_post_queue_summary`.
 
     Args:
-        force: Post even when the state is unchanged.  Used by the scheduled
+        force: Repost even when the state is unchanged.  Used by the scheduled
             digest so a quiet channel still gets a status line.
     """
-    global _last_modmail_summary_key, _last_activity_at
+    global _last_modmail_summary_key, _last_activity_at, _modmail_status_ts, _modmail_status_refreshed_at
     if not modmail_channel:
         return
     try:
         open_convs = reddit.get_open_conversations(modmail_channel)
         summary_key = ",".join(sorted(c["conv_id"] for c in open_convs))
-        if not force and summary_key == _last_modmail_summary_key:
+        now = time.time()
+        unchanged = _last_modmail_summary_key is not None and summary_key == _last_modmail_summary_key
+        if unchanged and not force and (
+            not _modmail_status_ts or now - _modmail_status_refreshed_at < _STATUS_REFRESH_INTERVAL
+        ):
             return
         if not open_convs:
-            text = ":white_check_mark: All modmail conversations are resolved."
+            body = ":white_check_mark: All modmail conversations are resolved."
         else:
             parts: List[str] = []
             for conv in open_convs:
                 label = f"#{reddit.conv_label(conv.get('conv_num'))}. u/{conv['author']} — {conv['subject']}"
                 link = conv.get("slack_permalink")
                 parts.append(f"<{link}|{label}>" if link else label)
-            text = f":speech_balloon: *{len(open_convs)} open modmail thread(s):*\n" + "\n".join(f"• {p}" for p in parts)
-        web_client.chat_postMessage(channel=modmail_channel, text=text)
+            body = f":speech_balloon: *{len(open_convs)} open modmail thread(s):*\n" + "\n".join(f"• {p}" for p in parts)
+
+        repost = force or not unchanged
+        _modmail_status_ts = _publish_status(web_client, modmail_channel, body, _modmail_status_ts, repost=repost)
+        _modmail_status_refreshed_at = now
         _last_modmail_summary_key = summary_key
-        _last_activity_at = time.time()
+        if repost:
+            _last_activity_at = now
     except Exception as e:
         logging.error(f"Modmail summary error: {e}")
 
@@ -1408,7 +1607,7 @@ def _maybe_post_digest(web_client: SlackWebClient) -> bool:
 
     Fires once per hour in ``_DIGEST_HOURS`` (local to ``_DIGEST_TZ``), bypassing
     the normal "state unchanged" dedup so a quiet channel still gets a status
-    line each morning and midday.  Suppressed when the bot has already posted
+    line at each check-in through the day.  Suppressed when the bot has already posted
     within ``_DIGEST_QUIET_PERIOD`` — the channel is not quiet, so a forced
     repeat would just be noise.
 
@@ -1470,6 +1669,28 @@ def _append_action_note(client: Any, channel: str, item_id: str, ts: str, note_t
         logging.warning(f"Could not append action note to {item_id}: {e}")
 
 
+# Seconds to wait after an upstream 5xx before polling again. Shorter than a
+# typical POLL_INTERVAL on purpose: a 5xx is usually a brief blip, so the
+# feed retries sooner than it otherwise would rather than backing off.
+_SERVER_ERROR_RETRY_DELAY: int = 15
+
+
+def _is_server_error(exc: BaseException) -> bool:
+    """Return True if *exc* represents an upstream 5xx from Reddit or Slack.
+
+    Both client libraries hang the HTTP response off the exception: prawcore
+    raises ``ServerError`` carrying a ``requests`` response, and slack_sdk
+    raises ``SlackApiError`` carrying a ``SlackResponse``. Either way the
+    status code is at ``exc.response.status_code``, so one check covers both.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and 500 <= status < 600:
+        return True
+    # prawcore.exceptions.ServerError is 5xx by definition, even if the
+    # response object is not shaped as expected.
+    return type(exc).__name__ == "ServerError"
+
+
 def _check_queue_clear_and_post(client: Any) -> None:
     """After a moderation action, post a queue-clear notice if the Reddit modqueue is now empty.
 
@@ -1477,6 +1698,7 @@ def _check_queue_clear_and_post(client: Any) -> None:
     If the queue still has items, nothing is posted (the regular interval handles it).
     """
     def _run() -> None:
+        """Check the live queue and post the all-clear if it is now empty."""
         try:
             current_ids = reddit.get_current_modqueue_ids()
             if not current_ids:
@@ -1505,7 +1727,7 @@ def _reconcile_modqueue_state(web_client: SlackWebClient, poll_interval: int) ->
 
         for item_id, item_data in channel_data.items():
             slack_ts = item_data.get("slack_ts")
-            done_at = item_data.get("slack_done_at")
+            done_at = item_data.get("done_at")
             if not slack_ts:
                 continue
 
@@ -1558,7 +1780,13 @@ def _poll_loop() -> None:
     last_summary: float = 0.0
 
     while True:
+        # A channel that could not be resolved at startup (Slack unreachable,
+        # or the bot not yet invited to a private channel) is retried here, so
+        # the feed starts on its own once the problem clears.
+        _retry_unresolved_channels()
+
         logging.info("Polling Reddit...")
+        server_error = False
         modqueue_changed = False
         try:
             if modqueue_channel:
@@ -1589,6 +1817,7 @@ def _poll_loop() -> None:
                 # Auto-reopen: item marked done in Slack but still in Reddit queue after grace period.
                 modqueue_changed = _reconcile_modqueue_state(web_client, poll_interval)
         except Exception as e:
+            server_error = server_error or _is_server_error(e)
             logging.error(f"Poller error (modqueue): {e}")
 
         try:
@@ -1623,11 +1852,12 @@ def _poll_loop() -> None:
                                 conv_ts = item["thread_ts"] or batch_thread_ts.get(conv_id)
                                 if conv_ts:
                                     _mark_conv_as_reopened(web_client, modmail_channel, conv_ts)
-                            reddit.set_conv_status(modmail_channel, conv_id, "open")
+                            reddit.set_conv_done_at(modmail_channel, conv_id, None)
                         logging.info(f"Posted modmail {'conv' if item['is_new_conv'] else 'reply'} {conv_id} to {modmail_channel}")
                     except Exception as e:
                         logging.error(f"Poller error posting modmail {conv_id}: {e}")
         except Exception as e:
+            server_error = server_error or _is_server_error(e)
             logging.error(f"Poller error (modmail): {e}")
 
         modmail_changed = False
@@ -1654,6 +1884,7 @@ def _poll_loop() -> None:
                     logging.info(f"Auto-unarchived modmail conv {conv_id} in Slack (by {by or 'unknown'})")
                     modmail_changed = True
         except Exception as e:
+            server_error = server_error or _is_server_error(e)
             logging.error(f"Poller error (modmail archive sync): {e}")
 
         now = time.time()
@@ -1664,7 +1895,12 @@ def _poll_loop() -> None:
             _post_modmail_summary(web_client)
             last_summary = now
 
-        time.sleep(poll_interval)
+        # A 5xx is usually transient, so retry on the shorter delay instead of
+        # waiting out a full poll interval.
+        delay = _SERVER_ERROR_RETRY_DELAY if server_error else poll_interval
+        if server_error:
+            logging.warning(f"Upstream 5xx this pass — retrying in {delay}s")
+        time.sleep(delay)
 
 
 def _check_pidfile() -> None:
@@ -1696,11 +1932,17 @@ def _check_pidfile() -> None:
 
 if __name__ == "__main__":
     _check_pidfile()
+    _startup()
 
-    if modqueue_channel or modmail_channel:
+    # Start on what is *configured*, not on what resolved — a channel that
+    # could not be resolved at startup is retried inside the poll loop, so
+    # gating on resolution here would strand it permanently.
+    if _is_configured(_raw_modqueue_channel) or _is_configured(_raw_modmail_channel):
         poller_thread = threading.Thread(target=_poll_loop, daemon=True)
         poller_thread.start()
         logging.info("Polling thread started.")
+        if _pending_channels():
+            logging.warning(f"Starting with unresolved channel(s): {', '.join(_pending_channels())} — will retry each poll")
     else:
         logging.warning("No MODQUEUE_CHANNEL or MODMAIL_CHANNEL configured — polling disabled.")
 
