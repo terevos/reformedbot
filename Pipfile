@@ -8,6 +8,7 @@ praw = "*"
 slack-bolt = "*"
 
 [dev-packages]
+pytest = "*"
 
 [requires]
 python_version = "3.13"

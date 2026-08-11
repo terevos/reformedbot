@@ -5,3 +5,5 @@ slack.ini
 Pipfile.lock
 logs/*
 __pycache__/*
+.coverage
+.pytest_cache/
