@@ -11,17 +11,62 @@ SIGNING_SECRET = your-signing-secret-here
 # How often (seconds) to poll Reddit for new items (default: 30)
 POLL_INTERVAL = 30
 
-[Channels]
-# Channel name (e.g. mod_actions) or ID (e.g. C0ARRHHT8M7) where reports and
+# One [Subreddit:<name>] section per subreddit the bot serves. Each gets its
+# own pair of Slack channels; add another section to add another subreddit.
+#
+# Channel name (e.g. modbot_reports) or ID (e.g. C0ARRHHT8M7) where reports and
 # mail are posted automatically. Names are resolved to IDs at startup; for a
 # private channel the bot must first be invited to it.
-# Leave blank to disable auto-posting for that category
-MODQUEUE_CHANNEL = modbot-reports
-MODMAIL_CHANNEL  = modbot-mail
+# Leave blank to disable auto-posting for that category.
+#
+# CONTROLS picks which buttons a card carries, per subreddit:
+#   vote      the Cast vote... dropdown and its tally on modqueue cards — mods
+#             decide together, and somebody acts on Reddit separately
+#   actions   Archive / Unarchive on modmail cards, performed on Reddit for
+#             real, for the whole mod team rather than in Slack alone
+# Comma-separate to combine them. Omit the key for `vote`, which is what every
+# card carried before this existed. A CONTROLS in [Default] applies to every
+# subreddit that does not set its own.
+#
+# Modqueue items carry no Reddit action of their own: `actions` once added a
+# Take action... dropdown (Approve / Remove / Warn / Ban) there, and that was
+# withdrawn. Act on Reddit itself, then mark the item Done in Slack — or let
+# the poll loop notice it left the modqueue and close the card for you.
+#
+# The Done button is not part of this: every card has one, so an item can
+# always be closed out in Slack whatever else it offers.
+#
+# REDDIT_ACCOUNT names the praw.ini profile (section) whose Reddit account
+# polls and acts on that subreddit; that account must moderate it. Subreddits
+# naming the same profile share one session and one rate-limit budget. A
+# REDDIT_ACCOUNT in [Default] applies to every subreddit that does not set its
+# own; absent from both, the profile is `reformedbot`.
+
+[Subreddit:reformed]
+MODQUEUE_CHANNEL = modbot_reports
+MODMAIL_CHANNEL  = modbot_mail
+CONTROLS         = vote
+REDDIT_ACCOUNT   = reformedautomod
+
+[Subreddit:whatcouldgowrong]
+MODQUEUE_CHANNEL = wcgw_reports
+MODMAIL_CHANNEL  = wcgw_mail
+CONTROLS         = vote, actions
+REDDIT_ACCOUNT   = terevos2
 
 [Mods]
 # Map Slack user IDs to Reddit usernames.
-# Only users listed here can click Approve / Remove / Warn / Ban buttons.
+# Only users listed here can vote, mark items Done, or archive modmail.
+# These moderators can act in every feed.
 # Format: SLACK_USER_ID = reddit_username  (Slack IDs are uppercase: U...)
 U0123456789 = terevos2
 UABCDEFGHIJ = bishopofreddit
+
+# Moderators of one subreddit only — allowed to act on that subreddit's
+# channels and nowhere else.
+[Mods:whatcouldgowrong]
+UZYXWVUTSRQ = some_wcgw_mod
+
+# The pre-multi-subreddit layout — a bare [Channels] section, with the
+# subreddit taken from [Default] SUBREDDIT (default: reformed) — is still read
+# when no [Subreddit:...] section exists, so an old config keeps working.

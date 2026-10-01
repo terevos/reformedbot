@@ -7,9 +7,18 @@ from reddit_actions import RedditActions
 from conftest import CHANNEL, FakeItem, FakeRedditor
 
 
-def poll(actions: RedditActions, **kw: Any) -> Tuple[int, List[Any]]:
-    """Run one modqueue poll and return ``(total, new blocks)``."""
-    return actions.get_modqueue(CHANNEL, no_repost=True, as_blocks=True, **kw)
+def poll(actions: RedditActions, post: bool = True, **kw: Any) -> Tuple[int, List[Any]]:
+    """Run one modqueue poll and return ``(total, new blocks)``.
+
+    With *post*, record a ``slack_ts`` for every card as the listener does
+    once Slack accepts it; without it, every post is taken to have failed.
+    """
+    total, blocks = actions.get_modqueue(CHANNEL, no_repost=True, as_blocks=True, **kw)
+    if post:
+        for item_id, entry in actions.store.channel_items(CHANNEL).items():
+            if not entry.get("slack_ts"):
+                actions.set_item_slack_ts(CHANNEL, item_id, f"ts-{item_id}")
+    return total, blocks
 
 
 def test_new_item_is_returned_and_logged(actions: RedditActions, fake_reddit: Any) -> None:
@@ -33,6 +42,29 @@ def test_only_the_new_item_is_returned_on_a_later_poll(actions: RedditActions, f
     fake_reddit.add_queue_item(FakeItem("a2", created_utc=2.0))
     total, blocks = poll(actions)
     assert total == 2 and len(blocks) == 1
+
+
+def test_item_whose_post_failed_is_offered_again_with_its_number(actions: RedditActions, fake_reddit: Any) -> None:
+    """The entry is logged before Slack is asked; a rejected post must not lose the item."""
+    fake_reddit.add_queue_item(FakeItem("a1", created_utc=1.0))
+    poll(actions, post=False)
+    num = actions.get_modqueue_file()[CHANNEL]["a1"]["queue_num"]
+    fake_reddit.add_queue_item(FakeItem("a2", created_utc=2.0))
+    total, blocks = poll(actions)
+    assert len(blocks) == 2, "the unposted card comes back alongside the new one"
+    assert actions.get_modqueue_file()[CHANNEL]["a1"]["queue_num"] == num, "and keeps its number"
+    assert blocks[0][0]["text"]["text"].startswith(f"#{num} ")
+    assert poll(actions)[1] == [], "and is not offered again once posted"
+
+
+def test_long_comment_card_fits_slack_section_limit(actions: RedditActions, fake_reddit: Any) -> None:
+    """A long comment used to overflow the 3000-char section, and Slack rejected the card."""
+    body = "\n".join(["x" * 280] * 11)
+    fake_reddit.add_queue_item(FakeItem("c1", kind="comment", body=body, created_utc=1.0))
+    _, blocks = poll(actions)
+    section = blocks[0][1]["text"]["text"]
+    assert len(section) <= RedditActions.SECTION_LIMIT
+    assert "truncated" in section and "*Reports:*" in section and "View on Reddit" in section
 
 
 def test_queue_numbers_follow_arrival_order_not_reddit_order(actions: RedditActions, fake_reddit: Any) -> None:

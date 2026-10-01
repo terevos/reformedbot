@@ -2,7 +2,6 @@
 migration off the legacy ``slack_done_at`` / ``status`` fields."""
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -44,6 +43,45 @@ def test_set_item_done_at_round_trip(actions: RedditActions) -> None:
     actions.set_item_done_at(CHANNEL, "abc", None)
     assert "done_at" not in actions.get_item_info(CHANNEL, "abc")
     assert not RedditActions.is_done(actions.get_item_info(CHANNEL, "abc"))
+
+
+def test_reopening_an_item_records_when(actions: RedditActions) -> None:
+    """Open is an absent done_at, which leaves no trace; reopened_at is the trace."""
+    actions.write_modqueue_file({CHANNEL: {"abc": {"queue_num": 1}}})
+    actions.set_item_done_at(CHANNEL, "abc", 999.0)
+
+    before = time.time()
+    actions.set_item_done_at(CHANNEL, "abc", None)
+
+    assert actions.get_item_info(CHANNEL, "abc")["reopened_at"] >= before
+
+
+def test_reopened_at_survives_being_marked_done_again(actions: RedditActions) -> None:
+    """It is a record of what happened, not a state — is_done stays the predicate."""
+    actions.write_modqueue_file({CHANNEL: {"abc": {"queue_num": 1}}})
+    actions.set_item_done_at(CHANNEL, "abc", 999.0)
+    actions.set_item_done_at(CHANNEL, "abc", None)
+    actions.set_item_done_at(CHANNEL, "abc", 1500.0)
+
+    entry = actions.get_item_info(CHANNEL, "abc")
+    assert "reopened_at" in entry
+    assert RedditActions.is_done(entry)
+
+
+def test_an_item_that_was_never_done_records_no_reopen(actions: RedditActions) -> None:
+    actions.write_modqueue_file({CHANNEL: {"abc": {"queue_num": 1}}})
+    actions.set_item_done_at(CHANNEL, "abc", None)
+    assert "reopened_at" not in actions.get_item_info(CHANNEL, "abc")
+
+
+def test_reopening_a_conversation_records_when(actions: RedditActions) -> None:
+    actions.set_conv_done_at(MAIL_CHANNEL, "c1", 500.0)
+
+    before = time.time()
+    actions.set_conv_done_at(MAIL_CHANNEL, "c1", None)
+
+    entry = actions.get_modmail_file()[MAIL_CHANNEL]["modmail_conv"]["c1"]
+    assert entry["reopened_at"] >= before
 
 
 def test_set_item_done_at_ignores_unknown_item(actions: RedditActions) -> None:
@@ -160,8 +198,10 @@ def test_migrate_tolerates_empty_and_malformed_logs(actions: RedditActions) -> N
 
 
 def test_logs_are_written_to_the_configured_directory(actions: RedditActions, tmp_path: Path) -> None:
-    """The suite must never touch the repo's real logs/ directory."""
+    """The suite must never touch the repo's real logs/ directory.
+
+    The store is per subreddit — ``<log_dir>/<subreddit>/modlog.db``.
+    """
     actions.write_modqueue_file({CHANNEL: {"a": {}}})
-    written = tmp_path / "logs" / "modqueue.json"
-    assert written.exists()
-    assert json.loads(written.read_text())[CHANNEL] == {"a": {}}
+    assert (tmp_path / "logs" / "reformed" / "modlog.db").exists()
+    assert actions.get_modqueue_file()[CHANNEL] == {"a": {}}

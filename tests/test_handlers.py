@@ -56,14 +56,9 @@ class ImmediateThread:
 
 
 @pytest.fixture
-def wired(monkeypatch: pytest.MonkeyPatch, actions: RedditActions, slack: Any) -> Any:
-    """Listener globals pointed at the fakes, with one mod authorised."""
+def wired(monkeypatch: pytest.MonkeyPatch, feed: Any, actions: RedditActions, slack: Any) -> Any:
+    """One resolved feed pointed at the fakes, with one mod authorised."""
     monkeypatch.setattr(L.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(L, "reddit", actions)
-    monkeypatch.setattr(L, "modqueue_channel", CHANNEL)
-    monkeypatch.setattr(L, "modmail_channel", "C_MAIL")
-    monkeypatch.setattr(L, "_raw_modqueue_channel", "mod_actions")
-    monkeypatch.setattr(L, "_raw_modmail_channel", "mod_mail")
     monkeypatch.setattr(L, "mod_slack_ids", {MOD: "terevos2"})
     return actions, slack
 
@@ -93,8 +88,26 @@ def test_done_marks_the_item_and_names_the_mod(wired: Any) -> None:
     L.handle_mark_done(ack, body({"value": "queue|a1|submission"}), slack)
 
     assert actions.get_item_info(CHANNEL, "a1")["done_at"] is not None
-    assert slack.last_update()["blocks"][0]["text"]["text"] == "✅ DONE — terevos2"
-    assert any("Marked done by terevos2" in p["text"] for p in slack.posted)
+    # Reddit names no resolution for this item, so the card falls back to the
+    # gavel — done, action unknown — in the header, the marker and the note.
+    assert slack.last_update()["blocks"][0]["text"]["text"].endswith(":completed: DONE — terevos2")
+    assert any(RedditActions.is_done_marker(b) for b in slack.last_update()["blocks"])
+    assert any(p["text"] == ":completed: Marked done by terevos2" for p in slack.posted)
+
+
+def test_done_uses_the_emoji_of_what_happened_on_reddit(wired: Any, fake_reddit: Any) -> None:
+    actions, slack = wired
+    log_item(actions)
+    slack.seed_message(TS, [DETAIL])
+    fake_reddit.items["a1"] = FakeItem("a1", banned_by="friardon")
+
+    L.handle_mark_done(ack, body({"value": "queue|a1|submission"}), slack)
+
+    blocks = slack.last_update()["blocks"]
+    assert blocks[0]["text"]["text"].endswith("❌ DONE — terevos2")
+    marker = [b for b in blocks if RedditActions.is_done_marker(b)]
+    assert marker and marker[0]["text"]["text"] == "❌ DONE ❌"
+    assert any(p["text"] == "❌ Marked done by terevos2" for p in slack.posted)
 
 
 def test_done_on_a_conversation_sets_conversation_state(wired: Any) -> None:
@@ -195,6 +208,7 @@ def test_reopen_clears_done_state_and_restores_controls(wired: Any, fake_reddit:
     action_ids = [e.get("action_id") for b in blocks if b.get("type") == "actions" for e in b["elements"]]
     assert "mark_done" in action_ids
     assert any("Re-opened by terevos2" in p["text"] for p in slack.posted)
+    assert blocks[0]["text"]["text"].endswith("🔄 REOPENED — terevos2"), "the card says it was reopened, and by whom"
 
 
 def test_reopen_falls_back_to_the_existing_message_when_reddit_cannot_serve_it(wired: Any) -> None:

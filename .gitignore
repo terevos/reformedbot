@@ -1,9 +1,23 @@
 *~
 .*~
-praw.ini
-slack.ini
+
+# Credentials. The globs cover dated backups too (slack.ini.bak-20260813);
+# the example file is the one variant that is meant to be committed.
+praw.ini*
+slack.ini*
+!slack.ini.example
+
+# Live data: real users, real report text, real Slack IDs.
+logs/
+
 Pipfile.lock
-logs/*
-__pycache__/*
+reformedbot.pid
+*.pid
+
+# Anywhere, not just the repo root — tests/__pycache__/ was slipping past
+# the old `__pycache__/*`, which is anchored to the directory it sits in.
+__pycache__/
+*.py[cod]
+
 .coverage
 .pytest_cache/

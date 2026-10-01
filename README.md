@@ -1,6 +1,8 @@
 # ReformedBot v2
 
-A Slack bot that surfaces Reddit r/reformed moderation activity directly in Slack with interactive dropdowns for taking mod actions — without ever leaving Slack.
+A Slack bot that surfaces Reddit moderation activity directly in Slack, so mods can discuss and triage it there rather than in the Reddit modqueue.
+
+Any number of subreddits can be served at once. Each gets its own pair of Slack channels (one for mod reports, one for modmail), its own numbering, and its own status messages; see [Configuration Files](#configuration-files).
 
 ---
 
@@ -31,26 +33,31 @@ Each report card has a **Vote dropdown** for non-binding discussion before takin
 
 Votes are for mod discussion only — they do not automatically take action on Reddit.
 
-### Actions
+### Closing a report out
 
-The **Actions dropdown** on each report card supports:
+Report cards take no action on Reddit. Approve, remove, warn, and ban happen on Reddit itself; the card is how the mods decide and keep track.
 
-- **Approve on Reddit** — Approves the item immediately. Posts a thread reply confirming who approved it.
-- **Remove on Reddit** — Opens a modal to select a removal reason, add notes, and choose delivery method (public reply, private message, or silent). Posts a thread reply with details.
-- **Warn User on Reddit** — Opens a modal to compose a warning message sent as modmail to the user. Posts a thread reply.
-- **Ban User on Reddit** — Opens a modal to enter ban reason, duration (blank = permanent), and an optional mod note. Posts a thread reply.
+- **Done** — Marks the item resolved in Slack. Every card has this button.
+- Or do nothing: once the item leaves the Reddit modqueue, the next poll marks the card done on its own and the header names who approved or removed it.
 
-When an action is taken the card is updated in place: dropdowns are removed, a status header is added (e.g. `✅ APPROVED — username`), and a `:completed: DONE :completed:` marker appears at the bottom. A **Re-open** dropdown also appears to restore the full interactive card if needed.
+Either way the card is updated in place: dropdowns are removed, a status header is added (e.g. `✅ DONE — username`), and a `:completed: DONE :completed:` marker appears at the bottom. A **Re-open** dropdown also appears to restore the full interactive card if needed.
+
+One exception to the auto-done: while any mod holds a **Ban** vote the card is kept open, since leaving the modqueue does not settle the question that vote is asking. The header says what Reddit did and the card keeps its controls, so Done still closes it.
 
 ### Report Summaries
 
-Every 5 minutes the bot posts a one-line summary of items still pending:
+Every 5 minutes the bot updates a single status message at the bottom of the channel with what is still pending:
 
 ```
 🕐 3 item(s) still pending: #1 | #3 | #7
+🗳 Items with 3+ votes: #1 ❌3 | #7 ✅4
 ```
 
-Each number links directly to its Slack message. If the queue is clear: `:white_check_mark: Mod queue is clear.` Duplicate summaries are suppressed if the queue state hasn't changed.
+Each number links directly to its Slack message. The pending count links to the subreddit's Reddit modqueue. If nothing is queued on Reddit and no card is still open: `✅ Mod queue is clear.` If nothing is queued but a card is still open here — a **Ban** vote holds one open — the summary names what is left rather than claiming the queue is clear. Duplicate summaries are suppressed if the state hasn't changed.
+
+The second line appears once an item has collected **three or more Approve or Remove votes** — the mods have agreed, and somebody needs to act on Reddit. A Spam vote counts as a Remove. An item that has gone both ways is listed twice, so a split is visible rather than hidden. Items held open after leaving the modqueue (a Ban vote) are included, so this line can appear under an otherwise-clear queue.
+
+Below the summary is an **Items I haven't voted on** button. The list it returns is different for every mod — it shows only the open items *you* have not voted on — and only you see it. Nothing is posted to the channel.
 
 ---
 
@@ -60,13 +67,10 @@ New modmail conversations are posted as top-level messages in the modmail channe
 
 ### Actions
 
-The action dropdown on each modmail message supports:
+The controls sit on the conversation's own card, not on its thread replies:
 
-- **Reply on Reddit** — Opens a modal to compose a reply sent from the mod team (author hidden). Posts a thread reply in Slack confirming who replied. Marks the conversation **done**.
-- **Archive on Reddit** — Archives the conversation on Reddit. Marks **done**. Replaces the action dropdown with a single **Unarchive on Reddit** option.
-- **Mute on Reddit** — Mutes the conversation for 72 hours. Marks **done**.
-- **Warn User on Reddit** — Same as warn from a report card.
-- **Ban User on Reddit** — Same as ban from a report card.
+- **Done** — Marks the conversation resolved in Slack alone, leaving Reddit untouched. Always present.
+- **Archive** — Archives the conversation on Reddit for the whole mod team, and marks it **done**. Replaced afterwards by a single **Unarchive** option, which puts the conversation and its controls back. Offered only on a subreddit configured for `CONTROLS = actions`.
 
 ### Done and Re-opened
 
@@ -74,14 +78,13 @@ A conversation is marked **done** when any of the following occur:
 
 | Trigger | How |
 |---|---|
-| Mod sends a reply via bot | Reply modal submitted |
-| Mod archives via bot | Archive selected in dropdown |
-| Mod mutes via bot | Mute selected in dropdown |
+| Mod marks it done in Slack | Done button |
+| Mod archives via bot | Archive button |
 | Archived directly on Reddit | Detected on next poll |
 
 When done, the top-level message gains a status header and `:completed: DONE :completed:` marker.
 
-A conversation is **re-opened** when a new message arrives from a non-mod. The new message is posted as a thread reply and the top-level message is updated to show `🔄 REOPENED`. Unarchiving via the bot also re-opens the conversation and restores the full action dropdown.
+A conversation is **re-opened** when a new message arrives from a non-mod. The new message is posted as a thread reply and the top-level message is updated to show `🔄 REOPENED`. Unarchiving via the bot also re-opens the conversation and restores its controls.
 
 ### Modmail Summaries
 
@@ -99,7 +102,9 @@ Each entry links directly to the Slack thread. If all conversations are resolved
 
 ## Authorization
 
-Only Slack users listed in the `[Mods]` section of `slack.ini` can use action dropdowns. Unauthorized clicks receive a private ephemeral error visible only to them.
+Only Slack users listed in the `[Mods]` section of `slack.ini` can use a card's controls. Unauthorized clicks receive a private ephemeral error visible only to them.
+
+`[Mods]` applies to every subreddit the bot serves. To authorize someone for one subreddit alone, list them in `[Mods:<subreddit>]` instead — they can then act on that subreddit's channels and nowhere else. A message must also live in a configured feed channel; a click in any other channel is ignored.
 
 ---
 
@@ -126,7 +131,7 @@ pip install -r requirements.txt
 
 Two config files are required:
 
-**`praw.ini`** — Reddit OAuth credentials for the `reformedbot` PRAW profile. See [PRAW docs](https://praw.readthedocs.io/en/stable/getting_started/configuration/prawini.html).
+**`praw.ini`** — Reddit OAuth credentials, one profile (section) per Reddit account the feeds name in `REDDIT_ACCOUNT` (default `reformedbot`). See [PRAW docs](https://praw.readthedocs.io/en/stable/getting_started/configuration/prawini.html).
 
 **`slack.ini`** — Copy from `slack.ini.example` and fill in:
 
@@ -137,16 +142,31 @@ APP_TOKEN = xapp-your-app-level-token-here
 SIGNING_SECRET = your-signing-secret-here
 POLL_INTERVAL = 30
 
-[Channels]
+[Subreddit:reformed]
 MODQUEUE_CHANNEL = mod_actions
 MODMAIL_CHANNEL  = mod_mail
+CONTROLS         = vote
+
+[Subreddit:whatcouldgowrong]
+MODQUEUE_CHANNEL = wcgw_reports
+MODMAIL_CHANNEL  = wcgw_mail
+CONTROLS         = vote, actions
 
 [Mods]
 U0123456789 = reddit_username
 UABCDEFGHIJ = another_mod
+
+[Mods:whatcouldgowrong]
+UZYXWVUTSRQ = wcgw_only_mod
 ```
 
+One `[Subreddit:<name>]` section per subreddit; add a section to add a subreddit. Each is polled by the Reddit account its `REDDIT_ACCOUNT` key names — a profile in `praw.ini`, default `reformedbot` — which must moderate that subreddit. Subreddits naming the same profile share one session.
+
+`CONTROLS` picks which controls that subreddit's cards carry: `vote` for the Cast vote… dropdown on report cards, `actions` for Archive/Unarchive on modmail cards, comma-separated for both. Omit the key for `vote`. A `CONTROLS` in `[Default]` applies to every subreddit that does not set its own. The Done button is not part of the choice — every card has one.
+
 Channel values may be a channel name (`mod_actions`) or a Slack channel ID (`C0123456789`); names are resolved to IDs when the bot starts. For a private channel, invite the bot to it first or the lookup will fail. Leave a channel blank to disable auto-posting for that category.
+
+The pre-multi-subreddit layout — a bare `[Channels]` section, with the subreddit taken from `[Default] SUBREDDIT` (default: `reformed`) — is still read when no `[Subreddit:...]` section exists, so an existing config keeps working unchanged.
 
 ### Slack App
 
@@ -178,14 +198,53 @@ The bot prevents duplicate instances using a pidfile (`reformedbot.pid`) in the 
 
 ## Data Storage
 
-State is stored in two persistent JSON files under `logs/`:
+Each subreddit keeps its own state in a SQLite database, so two feeds never
+share a file:
 
-| File | Contents |
+| Path | Contents |
 |------|----------|
-| `logs/modqueue.json` | Report deduplication, vote tallies, Slack message timestamps |
-| `logs/modmail.json` | Modmail conversation tracking, thread timestamps, open/done status |
+| `logs/<subreddit>/modlog.db` | The store: reports, votes, modmail conversations and messages, card numbering |
+| `logs/<subreddit>/archive/` | Rolled-over logs, one JSON file per cycle per channel |
+| `logs/<subreddit>/export/` | Weekly JSON exports of the live store |
 
-### `logs/modqueue.json` structure
+Everything the bot writes during a poll or a button click is a single row —
+one vote, one done-stamp — rather than a rewrite of the whole log, which is
+what the JSON files this replaced had to do.
+
+A bot upgraded from either JSON layout (`logs/<subreddit>/modqueue.json`, or
+the older shared `logs/modqueue.json` keyed by channel) imports each feed's
+channels on the first poll after startup. The JSON files are left in place and
+can be deleted once every feed has started.
+
+### Archiving
+
+Report numbers run `#1`–`#999` and modmail letters `#A`–`#ZZ`. Reaching the cap
+writes that channel's entries to
+`logs/<subreddit>/archive/modqueue-<channel>-cycle001-<timestamp>.json`, deletes
+the archived rows and starts the numbering over at `#1` / `#A`. Anything still
+open — and anything closed within the last 7 days, which the poll loop may still
+reconcile — stays in the store, keeping its old number; the new cycle skips
+numbers a carried-over card still holds, so no two cards in the channel share a
+label.
+
+### Exports
+
+Once a week the bot writes both logs to `logs/<subreddit>/export/` as JSON, in
+the same shape the old log files had, and keeps the newest 52 of each — a year
+of weekly snapshots. They are the readable, greppable copy of a database that is
+otherwise binary, and are re-importable if the database is ever lost. The
+schedule is stored in the database, so restarting the bot does not restart it;
+a brand-new store exports on its first poll.
+
+An export holds the *live* store, so cycles already archived are not in it —
+the archive files are the rest of the history.
+
+### Entry structure
+
+The store hands entries back in the shape the JSON logs used, which is also
+what the exports contain:
+
+**Reports**
 
 ```json
 {
@@ -205,7 +264,7 @@ State is stored in two persistent JSON files under `logs/`:
 }
 ```
 
-### `logs/modmail.json` structure
+**Modmail**
 
 ```json
 {

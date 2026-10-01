@@ -15,16 +15,8 @@ class StopLoop(Exception):
 
 
 @pytest.fixture
-def loop(monkeypatch: pytest.MonkeyPatch, actions: RedditActions, slack: Any) -> Any:
+def loop(monkeypatch: pytest.MonkeyPatch, feed: Any, actions: RedditActions, slack: Any) -> Any:
     """Wire the listener to fakes and make the poll loop run exactly one pass."""
-    monkeypatch.setattr(L, "reddit", actions)
-    monkeypatch.setattr(L, "modqueue_channel", CHANNEL)
-    monkeypatch.setattr(L, "modmail_channel", MAIL_CHANNEL)
-    monkeypatch.setattr(L, "_raw_modqueue_channel", "mod_actions")
-    monkeypatch.setattr(L, "_raw_modmail_channel", "mod_mail")
-    monkeypatch.setattr(L, "_last_summary_key", None)
-    monkeypatch.setattr(L, "_last_modmail_summary_key", None)
-    monkeypatch.setattr(L, "_last_activity_at", 0.0)
     monkeypatch.setattr(L, "_last_digest_slot", "already-fired")
     monkeypatch.setattr(L, "SlackWebClient", lambda token: slack)
     monkeypatch.setattr(L.config, "get", lambda *a, **k: "30")
@@ -56,7 +48,7 @@ def test_a_new_modqueue_item_is_posted_and_recorded(loop: Any, fake_reddit: Any)
 
     run_one_pass()
 
-    posted = [p for p in slack.posted if p["channel"] == CHANNEL and p["blocks"]]
+    posted = slack.cards(CHANNEL)
     assert len(posted) == 1
     entry = actions.get_item_info(CHANNEL, "a1")
     assert entry["slack_ts"] == posted[0]["ts"]
@@ -72,7 +64,7 @@ def test_an_item_is_not_posted_twice(loop: Any, fake_reddit: Any) -> None:
     before = len(slack.posted)
     run_one_pass()
 
-    new_item_posts = [p for p in slack.posted[before:] if p["blocks"]]
+    new_item_posts = slack.cards(since=before)
     assert new_item_posts == []
 
 
@@ -82,7 +74,7 @@ def test_a_new_modmail_message_is_posted_and_threaded(loop: Any, fake_reddit: An
 
     run_one_pass()
 
-    posted = [p for p in slack.posted if p["channel"] == MAIL_CHANNEL and p["blocks"]]
+    posted = slack.cards(MAIL_CHANNEL)
     assert len(posted) == 1
     assert actions.get_modmail_file()[MAIL_CHANNEL]["modmail_conv"]["c1"]["slack_ts"] == posted[0]["ts"]
 
@@ -174,11 +166,11 @@ def test_one_failing_feed_does_not_stop_the_other(loop: Any, fake_reddit: Any) -
 
     run_one_pass()
 
-    assert any(p["channel"] == MAIL_CHANNEL and p["blocks"] for p in slack.posted)
+    assert slack.cards(MAIL_CHANNEL)
 
 
-def test_unresolved_channels_are_retried_each_pass(monkeypatch: pytest.MonkeyPatch, loop: Any) -> None:
-    monkeypatch.setattr(L, "modqueue_channel", None)
+def test_unresolved_channels_are_retried_each_pass(monkeypatch: pytest.MonkeyPatch, loop: Any, feed: Any) -> None:
+    feed.modqueue_channel = None
     calls: List[str] = []
 
     def fake_resolve(raw: Optional[str], token: str) -> Optional[str]:
@@ -191,7 +183,7 @@ def test_unresolved_channels_are_retried_each_pass(monkeypatch: pytest.MonkeyPat
     run_one_pass()
 
     assert "mod_actions" in calls
-    assert L.modqueue_channel == CHANNEL
+    assert feed.modqueue_channel == CHANNEL
 
 
 # ---------------------------------------------------------------------------
